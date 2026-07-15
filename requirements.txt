@@ -1,0 +1,6 @@
+# Le collector n'a AUCUNE dépendance obligatoire : tout vient de /proc, /sys
+# et de la stdlib (sqlite3 inclus). C'est délibéré — un daemon root qu'on
+# installe avec pip est un daemon root qu'on met à jour sans le vouloir.
+
+# Optionnel : GPU NVIDIA. Sans lui, NvmlReader se désactive proprement.
+nvidia-ml-py>=12.535 ; platform_system == "Linux"
