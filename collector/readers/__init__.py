@@ -8,6 +8,7 @@ from .gigabyte_wmi import GigabyteWmiReader
 from .hwmon import HwmonReader
 from .k10temp import K10TempReader
 from .nvme import NvmeReader
+from .nvml import NvmlReader
 
 __all__ = [
     "AmdGpuReader",
@@ -15,6 +16,7 @@ __all__ = [
     "HwmonReader",
     "K10TempReader",
     "NvmeReader",
+    "NvmlReader",
     "Reader",
     "ReaderState",
 ]
