@@ -9,6 +9,7 @@ from .hwmon import HwmonReader
 from .k10temp import K10TempReader
 from .nvme import NvmeReader
 from .nvml import NvmlReader
+from .rapl import RaplReader
 
 __all__ = [
     "AmdGpuReader",
@@ -17,6 +18,7 @@ __all__ = [
     "K10TempReader",
     "NvmeReader",
     "NvmlReader",
+    "RaplReader",
     "Reader",
     "ReaderState",
 ]
