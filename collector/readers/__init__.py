@@ -9,6 +9,7 @@ from .hwmon import HwmonReader
 from .k10temp import K10TempReader
 from .nvme import NvmeReader
 from .nvml import NvmlReader
+from .proc import ProcReader
 from .rapl import RaplReader
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "K10TempReader",
     "NvmeReader",
     "NvmlReader",
+    "ProcReader",
     "RaplReader",
     "Reader",
     "ReaderState",
