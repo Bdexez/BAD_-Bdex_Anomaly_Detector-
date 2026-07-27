@@ -7,6 +7,7 @@ from unittest import mock
 
 from collector.readers import proc as proc_module
 from collector.readers.proc import ProcReader
+from collector.readers.psi import PsiReader
 
 from .helpers import make_proc_stat, write
 
@@ -15,6 +16,36 @@ full avg10=0.75 avg60=0.00 avg300=0.00 total=0
 """
 
 
+class PsiTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_parses_some_and_full(self):
+        for name in ("cpu", "io", "memory"):
+            write(self.root / name, PSI)
+        reader = PsiReader(root=self.root)
+        self.assertTrue(reader.setup())
+        self.assertEqual(
+            reader.read(),
+            {
+                "psi_cpu_some": 1.5,
+                "psi_io_some": 1.5,
+                "psi_io_full": 0.75,
+                "psi_mem_some": 1.5,
+                "psi_mem_full": 0.75,
+            },
+        )
+
+    def test_missing_files_shrink_the_schema(self):
+        write(self.root / "cpu", PSI)
+        reader = PsiReader(root=self.root)
+        self.assertTrue(reader.setup())
+        self.assertEqual(reader.fields, ["psi_cpu_some"])
+
+    def test_psi_disabled_kernel(self):
+        self.assertFalse(PsiReader(root=self.root).setup())
 
 
 class ProcTest(unittest.TestCase):

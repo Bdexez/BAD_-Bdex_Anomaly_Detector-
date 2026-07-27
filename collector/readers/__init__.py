@@ -10,6 +10,7 @@ from .k10temp import K10TempReader
 from .nvme import NvmeReader
 from .nvml import NvmlReader
 from .proc import ProcReader
+from .psi import PsiReader
 from .rapl import RaplReader
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "NvmeReader",
     "NvmlReader",
     "ProcReader",
+    "PsiReader",
     "RaplReader",
     "Reader",
     "ReaderState",
