@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .amdgpu import AmdGpuReader
 from .base import Reader, ReaderState
+from .context import ContextReader
 from .gigabyte_wmi import GigabyteWmiReader
 from .hwmon import HwmonReader
 from .k10temp import K10TempReader
@@ -15,6 +16,7 @@ from .rapl import RaplReader
 
 __all__ = [
     "AmdGpuReader",
+    "ContextReader",
     "GigabyteWmiReader",
     "HwmonReader",
     "K10TempReader",

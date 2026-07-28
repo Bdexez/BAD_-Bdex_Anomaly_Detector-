@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 from collector.readers import proc as proc_module
+from collector.readers.context import ContextReader
 from collector.readers.proc import ProcReader
 from collector.readers.psi import PsiReader
 
@@ -105,3 +106,74 @@ class ProcTest(unittest.TestCase):
         self.assertFalse(ProcReader(root=self.root / "absent").setup())
 
 
+class ContextTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        write(self.root / "uptime", "4270.06 30000.00\n")
+        patcher = mock.patch.object(ContextReader, "_find_gpu_busy", staticmethod(lambda: None))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def add_proc(self, pid, comm, utime, stime, starttime=1):
+        write(self.root / str(pid) / "stat", make_proc_stat(pid, comm, utime, stime, starttime))
+
+    def reader(self, window="kitty|shell"):
+        reader = ContextReader(proc_root=self.root)
+        reader.setup()
+        reader._query_window = lambda: window
+        return reader
+
+    def test_counts_processes_and_reads_uptime(self):
+        self.add_proc(1, "systemd", 0, 0)
+        self.add_proc(42, "kitty", 0, 0)
+        write(self.root / "self" / "stat", "ignoré")  # /proc/self n'est pas un pid
+        out = self.reader().read()
+        self.assertEqual(out["n_procs"], 2.0)
+        self.assertEqual(out["uptime_s"], 4270.06)
+        self.assertIsNone(out["top_proc_cpu"])  # pas de point précédent
+
+    def test_top_process_is_derived_between_ticks(self):
+        self.add_proc(1, "systemd", 0, 0)
+        self.add_proc(42, "stress-ng", 0, 0)
+        reader = self.reader()
+        with mock.patch("time.monotonic", side_effect=[0.0, 0.0, 1.0, 1.0]):
+            reader.read()
+            self.add_proc(42, "stress-ng", 50, 50)  # 100 jiffies en 1 s
+            out = reader.read()
+        self.assertEqual(out["top_proc_name"], "stress-ng")
+        self.assertAlmostEqual(out["top_proc_cpu"], 100.0, places=3)
+
+    def test_process_name_with_spaces_and_parentheses(self):
+        self.add_proc(7, "Web Content (x)", 0, 0)
+        reader = self.reader()
+        with mock.patch("time.monotonic", side_effect=[0.0, 0.0, 1.0, 1.0]):
+            reader.read()
+            self.add_proc(7, "Web Content (x)", 10, 0, starttime=1)
+            out = reader.read()
+        self.assertEqual(out["top_proc_name"], "Web Content (x)")
+
+    def test_pid_reuse_is_not_counted_as_cpu_burst(self):
+        self.add_proc(9, "old", 5000, 0, starttime=1)
+        reader = self.reader()
+        with mock.patch("time.monotonic", side_effect=[0.0, 0.0, 1.0, 1.0]):
+            reader.read()
+            self.add_proc(9, "new", 0, 0, starttime=999)  # même pid, autre process
+            out = reader.read()
+        self.assertEqual(out["top_proc_cpu"], 0.0)
+
+    def test_is_gaming_flags_known_hints(self):
+        self.add_proc(1, "init", 0, 0)
+        self.assertEqual(self.reader("steam_app_1234|STALKER 2").read()["is_gaming"], 1.0)
+        self.assertEqual(self.reader("kitty|shell").read()["is_gaming"], 0.0)
+
+    def test_is_gaming_is_null_when_compositor_unreachable(self):
+        # Écrire 0 ici affirmerait "pas de jeu" alors qu'on ne sait rien :
+        # c'est un faux label, et un faux label pollue tout le dataset.
+        self.add_proc(1, "init", 0, 0)
+        self.assertIsNone(self.reader(window=None).read()["is_gaming"])
+
+    def test_is_compositing_is_null_without_gpu_counter(self):
+        self.add_proc(1, "init", 0, 0)
+        self.assertIsNone(self.reader().read()["is_compositing"])
