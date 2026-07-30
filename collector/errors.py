@@ -1,0 +1,157 @@
+"""Catalogue des erreurs matérielles et noyau détectables sous Linux.
+
+Ce fichier est volontairement **des données, pas du code** : une règle = un
+motif, un genre, une gravité, et une phrase disant ce que ça veut dire. Tu peux
+en ajouter une sans toucher au moteur, et surtout tu peux relire la liste pour
+juger de ce qui est couvert.
+
+« Toutes les erreurs possibles » n'existe pas comme liste finie : un pilote peut
+inventer demain un message qu'aucun motif ne connaît. La couverture repose donc
+sur DEUX étages complémentaires :
+
+1. les règles ci-dessous, qui *classent* une erreur en genre exploitable
+   (`mce`, `gpu_reset`, `ecc_ue`…) — c'est ce qui rend le dataset labellisable ;
+2. un attrape-tout : **tout** enregistrement que le noyau lui-même marque en
+   priorité ≤ 3 (err, crit, alert, emerg) et qu'aucune règle ne reconnaît est
+   enregistré en `kernel_error` avec son texte brut.
+
+L'étage 2 garantit qu'on ne rate rien de ce que le noyau considère comme une
+erreur ; l'étage 1 détermine ce qu'on saura en faire. Les compteurs de
+`readers/errcounters.py` forment un troisième étage, indépendant du texte : ils
+attrapent les erreurs que le noyau comptabilise sans forcément les journaliser.
+
+Priorités syslog : 0 emerg, 1 alert, 2 crit, 3 err, 4 warning, 5 notice,
+6 info, 7 debug.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import NamedTuple
+
+CRITICAL = "critical"
+ERROR = "error"
+WARNING = "warning"
+
+#: Priorité syslog à partir de laquelle le noyau parle d'une erreur.
+KERNEL_ERROR_LEVEL = 3
+#: Genre attribué à une erreur noyau qu'aucune règle ne reconnaît.
+CATCH_ALL_KIND = "kernel_error"
+
+
+class Rule(NamedTuple):
+    kind: str
+    severity: str
+    pattern: re.Pattern[str]
+    note: str
+
+
+def _rule(kind: str, severity: str, pattern: str, note: str) -> Rule:
+    return Rule(kind, severity, re.compile(pattern, re.IGNORECASE), note)
+
+
+# --------------------------------------------------------------------------
+# Famille 1 — CPU et mémoire : les erreurs qui disent « le calcul était faux »
+# --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# Famille 2 — Stabilité du noyau : ce que produit un OC ou un undervolt trop bas
+# --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# Famille 3 — Mémoire et pression
+# --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# Famille 4 — GPU. Les deux marques ne parlent pas la même langue.
+# --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# Famille 5 — Stockage. Un SSD qui throttle fait grimper la pression I/O sans
+# qu'aucune sonde CPU ne bouge : la corrélation vaut la peine d'être capturée.
+# --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# Famille 6 — Bus, alimentation, firmware
+# --------------------------------------------------------------------------
+
+#: Ordre = priorité de correspondance. Le premier motif qui accroche gagne, donc
+#: le spécifique (mce_uncorrected) doit précéder le générique (mce).
+RULES: tuple[Rule, ...] = ()
+
+#: Codes Xid NVIDIA les plus parlants. Le reste est enregistré en brut.
+XID_MEANINGS = {
+    13: "erreur d'exécution graphique",
+    31: "accès mémoire GPU illégal",
+    43: "arrêt du canal par le pilote",
+    48: "erreur double bit (ECC)",
+    61: "microcontrôleur interne bloqué",
+    62: "erreur double bit non contenue",
+    63: "page ECC retirée",
+    64: "échec de retrait de page ECC",
+    69: "erreur moteur graphique",
+    79: "GPU tombé du bus (alimentation ou PCIe)",
+    93: "erreur non fatale du moteur",
+    109: "erreur de contexte du canal",
+}
+_XID_RE = re.compile(r"xid\s*\(?[^)]*\)?\s*:?\s*(\d+)", re.IGNORECASE)
+
+
+#: Messages que le noyau émet en priorité « erreur » alors qu'ils décrivent un
+#: état normal — absence d'une fonctionnalité, sonde qui répond « non supporté »,
+#: initialisation d'un collecteur d'erreurs. Sans cette liste, l'attrape-tout
+#: enregistrerait à chaque boot les mêmes non-événements, et une constante
+#: présente dans 100 % des lignes n'apprend rien à un modèle.
+#:
+#: À compléter machine par machine : `python -m collector.main --scan` montre ce
+#: qui a été classé sur le boot courant, ce qui rend l'ajustement immédiat.
+BENIGN = re.compile(
+    r"tdx: tdx not supported"
+    r"|sgx: there are zero epc sections"
+    r"|sgx disabled by bios"
+    r"|acpi:.*(successfully|acquired and loaded)"
+    r"|ras: correctable errors collector initialized"
+    r"|edac (mc|amd64):.*(ver:|not present|probe|drivers are available)"
+    r"|thermal_sys: failed to find"
+    r"|failed to get (bios|ec) "
+    r"|no (irq |)handler for vector"
+    r"|reservation of .* failed"
+    r"|error parsing pcc subspaces"
+    r"|check_flush_dependency",
+    re.IGNORECASE,
+)
+
+
+def classify(text: str, level: int | None = None) -> Rule | None:
+    """Range un message noyau dans un genre, ou None s'il n'a rien d'une erreur.
+
+    `level` est la priorité syslog. Un message que le noyau marque en err ou
+    pire mais qu'aucune règle ne reconnaît ressort en `kernel_error` : c'est ce
+    qui évite de ne détecter que les pannes qu'on avait déjà imaginées.
+    """
+    if BENIGN.search(text):
+        return None
+    for rule in RULES:
+        if rule.pattern.search(text):
+            return rule
+    if level is not None and level <= KERNEL_ERROR_LEVEL:
+        severity = CRITICAL if level <= 2 else ERROR
+        return Rule(CATCH_ALL_KIND, severity, _XID_RE, "Erreur noyau non classée.")
+    return None
+
+
+def describe_xid(text: str) -> str | None:
+    """Traduit un Xid NVIDIA en cause probable, quand le code est connu."""
+    match = _XID_RE.search(text)
+    if not match:
+        return None
+    code = int(match.group(1))
+    return f"Xid {code}: {XID_MEANINGS.get(code, 'code non répertorié')}"
+
+
+def catalogue() -> list[tuple[str, str, str]]:
+    """(genre, gravité, explication) — utilisé par `--doctor`."""
+    seen: dict[str, tuple[str, str, str]] = {}
+    for rule in RULES:
+        seen.setdefault(rule.kind, (rule.kind, rule.severity, rule.note))
+    return list(seen.values())
