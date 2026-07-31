@@ -53,14 +53,122 @@ def _rule(kind: str, severity: str, pattern: str, note: str) -> Rule:
 # --------------------------------------------------------------------------
 # Famille 1 — CPU et mémoire : les erreurs qui disent « le calcul était faux »
 # --------------------------------------------------------------------------
+CPU_RULES = (
+    _rule(
+        "mce_uncorrected", CRITICAL,
+        r"machine check exception|mce:.*uncorrect|hardware error.*uncorrect"
+        r"|processor context corrupt",
+        "Erreur machine non corrigée : un calcul a été faux. Cause n°1 d'un OC "
+        "instable, juste avant le gel.",
+    ),
+    _rule(
+        "mce", ERROR,
+        r"\bmce:\s*\[hardware error\]|machine check events logged"
+        r"|\bmce:\s*\[hardware error\].*corrected",
+        "Erreur machine corrigée : le matériel s'est rattrapé. Isolée elle est "
+        "bénigne, en série elle annonce la panne.",
+    ),
+    _rule(
+        "whea", CRITICAL,
+        r"hardware error from apei|\bghes\b.*error|apei.*hardware error"
+        r"|hardware error device",
+        "APEI/GHES : l'équivalent Linux du WHEA de Windows. Le firmware signale "
+        "une erreur matérielle que le CPU n'a pas gérée seul.",
+    ),
+    _rule(
+        "ecc_ue", CRITICAL,
+        r"edac.*\bue\b|uncorrected error.*memory|ue memory read error"
+        r"|uncorrectable.*(dimm|memory)",
+        "Erreur mémoire NON corrigée : donnée perdue. Barrette à remplacer.",
+    ),
+    _rule(
+        "ecc_ce", WARNING,
+        r"edac.*\bce\b|corrected error.*memory|ce memory read error"
+        r"|corrected.*(dimm|memory)",
+        "Erreur mémoire corrigée par l'ECC. Sans ECC (cas courant en desktop) "
+        "cette erreur-là serait passée inaperçue — et aurait corrompu la donnée.",
+    ),
+    _rule(
+        # `microcode:` avec deux-points = le chargeur du noyau. Sans cette
+        # précision, « iwlwifi: Microcode SW error detected » — un plantage de
+        # firmware Wi-Fi — serait classé comme un problème de CPU.
+        "microcode", WARNING,
+        r"\bmicrocode: .*(fail|error|mismatch)|microcode update.*fail",
+        "Chargement de microcode raté : le CPU tourne avec des errata connus.",
+    ),
+)
 
 # --------------------------------------------------------------------------
 # Famille 2 — Stabilité du noyau : ce que produit un OC ou un undervolt trop bas
 # --------------------------------------------------------------------------
+STABILITY_RULES = (
+    _rule(
+        "panic", CRITICAL,
+        r"kernel panic|fatal exception|system halted",
+        "Panique noyau. Sur une machine overclockée, c'est le verdict.",
+    ),
+    _rule(
+        "oops", CRITICAL,
+        r"\boops:|kernel bug at|bug: unable to handle|invalid opcode:"
+        r"|unable to handle kernel (paging|null)",
+        "Oops/BUG noyau : bug logiciel, ou instruction corrompue par une "
+        "instabilité électrique. Le contexte tranche.",
+    ),
+    _rule(
+        "gpf", ERROR,
+        r"general protection fault|stack segment:|double fault",
+        "Faute de protection générale : souvent le premier symptôme visible "
+        "d'un undervolt CPU hors marge.",
+    ),
+    _rule(
+        "hard_lockup", CRITICAL,
+        r"watchdog.*hard lockup|nmi watchdog.*cpu\s*#?\d+ (hard )?locked up",
+        "Verrou matériel : un cœur ne répond plus aux interruptions.",
+    ),
+    _rule(
+        "soft_lockup", ERROR,
+        r"watchdog.*bug: soft lockup|soft lockup - cpu#\d+ stuck",
+        "Verrou logiciel : un cœur monopolisé sans céder la main.",
+    ),
+    _rule(
+        "rcu_stall", ERROR,
+        r"rcu.*(self-detected stall|detected stalls|stall ended)",
+        "Blocage RCU : un cœur n'a pas progressé pendant des secondes. "
+        "Classique juste avant un gel complet.",
+    ),
+    _rule(
+        "hung_task", ERROR,
+        r"task .*blocked for more than \d+ seconds|hung_task",
+        "Tâche bloquée > 120 s. Pointe souvent vers un stockage en perdition.",
+    ),
+    _rule(
+        "nmi", ERROR,
+        r"uhhuh\. nmi received|nmi: (pci system|iock) error|dazed and confused",
+        "NMI matérielle non attendue : alimentation, RAM ou bus.",
+    ),
+    _rule(
+        "segfault", WARNING,
+        r"segfault at |traps: .*trap (int3|divide|invalid)",
+        "Segfault utilisateur. Isolé c'est un bug applicatif ; en rafale sur "
+        "des binaires variés, c'est le matériel qu'il faut suspecter.",
+    ),
+)
 
 # --------------------------------------------------------------------------
 # Famille 3 — Mémoire et pression
 # --------------------------------------------------------------------------
+MEMORY_RULES = (
+    _rule(
+        "oom", ERROR,
+        r"out of memory: kill|oom-kill:|invoked oom-killer|oom_reaper",
+        "Le noyau a tué un process faute de mémoire.",
+    ),
+    _rule(
+        "alloc_failure", WARNING,
+        r"page allocation (failure|stalls)|slab out of memory",
+        "Allocation refusée : fragmentation ou pression mémoire durable.",
+    ),
+)
 
 # --------------------------------------------------------------------------
 # Famille 4 — GPU. Les deux marques ne parlent pas la même langue.
@@ -77,7 +185,7 @@ def _rule(kind: str, severity: str, pattern: str, note: str) -> Rule:
 
 #: Ordre = priorité de correspondance. Le premier motif qui accroche gagne, donc
 #: le spécifique (mce_uncorrected) doit précéder le générique (mce).
-RULES: tuple[Rule, ...] = ()
+RULES: tuple[Rule, ...] = (CPU_RULES + STABILITY_RULES + MEMORY_RULES)
 
 #: Codes Xid NVIDIA les plus parlants. Le reste est enregistré en brut.
 XID_MEANINGS = {

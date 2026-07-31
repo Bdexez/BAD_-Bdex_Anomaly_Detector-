@@ -11,6 +11,13 @@ class ClassifyTest(unittest.TestCase):
         return rule.kind if rule else None
 
 
+    def test_specific_rule_wins_over_generic(self):
+        # mce_uncorrected doit précéder mce : l'inverse classerait une erreur
+        # non corrigée comme bénigne.
+        self.assertEqual(
+            self.kind("mce: [Hardware Error]: Uncorrected error, CPU 2"),
+            "mce_uncorrected",
+        )
 
     def test_catch_all_for_unknown_kernel_errors(self):
         rule = errors.classify("pilote_exotique: chose jamais vue", level=3)
@@ -37,6 +44,9 @@ class ClassifyTest(unittest.TestCase):
                 self.assertIsNone(errors.classify(text, level=3))
 
 
+    def test_no_level_means_rules_only(self):
+        self.assertIsNone(errors.classify("message inconnu"))
+        self.assertEqual(errors.classify("Kernel panic - not syncing").kind, "panic")
 
 
 class XidTest(unittest.TestCase):
