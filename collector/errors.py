@@ -173,11 +173,80 @@ MEMORY_RULES = (
 # --------------------------------------------------------------------------
 # Famille 4 — GPU. Les deux marques ne parlent pas la même langue.
 # --------------------------------------------------------------------------
+GPU_RULES = (
+    _rule(
+        "gpu_xid", CRITICAL,
+        r"nvrm:\s*xid|nvrm: gpu at pci|nvrm:.*rmini",
+        "Xid NVIDIA : le code dit la cause exacte (13 = erreur graphique, "
+        "31 = accès mémoire illégal, 79 = GPU tombé du bus, 62/63/64 = ECC).",
+    ),
+    _rule(
+        "gpu_reset", CRITICAL,
+        r"gpu reset|amdgpu.*(reset|recover)|drm.*resetting|gpu recovery"
+        r"|failed to reset|gpu hang",
+        "Reset GPU : le pilote a dû réinitialiser la carte. Sur un GPU "
+        "overclocké, c'est l'équivalent de la MCE côté CPU.",
+    ),
+    _rule(
+        "gpu_fault", ERROR,
+        r"gpu fault detected|vm_l2_protection_fault|page fault \(src_id"
+        r"|\[gfxhub\]|\[mmhub\]|ring .*timeout|fence.*timeout|job timed out",
+        "Faute mémoire ou timeout de ring GPU : calcul GPU perdu.",
+    ),
+    _rule(
+        "gpu_ecc", CRITICAL,
+        r"ras.*(ue|uncorrectable)|gpu ecc error|sram ecc|xgmi.*error",
+        "ECC GPU : erreur mémoire vidéo non corrigée.",
+    ),
+    _rule(
+        "gpu_thermal", ERROR,
+        r"gpu.*(over ?temp|thermal.*(trip|shutdown|throttl))"
+        r"|amdgpu.*temperature.*(high|critical)",
+        "Le GPU a atteint sa limite thermique matérielle.",
+    ),
+    _rule(
+        "drm_error", WARNING,
+        r"\[drm:[^\]]+\] \*error\*|drm_kms_helper.*error|atomic update failed",
+        "Erreur DRM générique : affichage, modeset, ou pilote en difficulté.",
+    ),
+)
 
 # --------------------------------------------------------------------------
 # Famille 5 — Stockage. Un SSD qui throttle fait grimper la pression I/O sans
 # qu'aucune sonde CPU ne bouge : la corrélation vaut la peine d'être capturée.
 # --------------------------------------------------------------------------
+STORAGE_RULES = (
+    _rule(
+        "nvme_error", ERROR,
+        r"nvme\d*[a-z]*\d*: .*(i/o|timeout|abort|reset|controller is down"
+        r"|failed to set apst|not ready|disabling device)",
+        "Erreur NVMe : timeout, reset de contrôleur ou I/O perdue.",
+    ),
+    _rule(
+        "ata_error", ERROR,
+        r"ata\d+(\.\d+)?: (exception|failed command|serror|hard resetting)"
+        r"|link is slow to respond",
+        "Erreur ATA/SATA : câble, alimentation ou disque en fin de vie.",
+    ),
+    _rule(
+        "block_error", ERROR,
+        r"blk_update_request|buffer i/o error|critical (medium|target|nexus) error"
+        r"|i/o error, dev \w+",
+        "I/O bloc en échec : secteur illisible ou périphérique disparu.",
+    ),
+    _rule(
+        "fs_error", CRITICAL,
+        r"ext4-fs error|btrfs.*(error|checksum)|xfs.*(internal error|corruption)"
+        r"|remounting filesystem read-only|f2fs.*error",
+        "Erreur de système de fichiers : corruption sur disque. "
+        "Souvent la trace laissée par un gel dû à l'OC.",
+    ),
+    _rule(
+        "smart_warning", WARNING,
+        r"smart.*(fail|threshold|warning)|critical warning.*0x",
+        "SMART/NVME critical warning : le disque s'annonce lui-même défaillant.",
+    ),
+)
 
 # --------------------------------------------------------------------------
 # Famille 6 — Bus, alimentation, firmware
@@ -185,7 +254,7 @@ MEMORY_RULES = (
 
 #: Ordre = priorité de correspondance. Le premier motif qui accroche gagne, donc
 #: le spécifique (mce_uncorrected) doit précéder le générique (mce).
-RULES: tuple[Rule, ...] = (CPU_RULES + STABILITY_RULES + MEMORY_RULES)
+RULES: tuple[Rule, ...] = (CPU_RULES + STABILITY_RULES + MEMORY_RULES + GPU_RULES + STORAGE_RULES)
 
 #: Codes Xid NVIDIA les plus parlants. Le reste est enregistré en brut.
 XID_MEANINGS = {
