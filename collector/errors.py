@@ -251,10 +251,76 @@ STORAGE_RULES = (
 # --------------------------------------------------------------------------
 # Famille 6 — Bus, alimentation, firmware
 # --------------------------------------------------------------------------
+BUS_RULES = (
+    _rule(
+        "pcie_fatal", CRITICAL,
+        r"aer:.*(fatal|uncorrected)|pcie bus error.*(fatal|uncorrected)",
+        "Erreur PCIe non corrigée : lien instable. Sur une carte graphique, "
+        "c'est souvent un riser, une alim faible, ou un BCLK poussé trop loin.",
+    ),
+    _rule(
+        "pcie_corrected", WARNING,
+        r"aer:.*corrected|pcie bus error.*corrected|badtlp|baddllp|rxerr",
+        "Erreur PCIe corrigée par retransmission. Le lien tient, mais il souffre.",
+    ),
+    _rule(
+        "pcie_link", ERROR,
+        r"pcieport.*link (down|is down|retrain)|card not present|link training"
+        r"|downgraded.*link|bandwidth.*limited",
+        "Lien PCIe descendu ou dégradé : un périphérique a disparu du bus.",
+    ),
+    _rule(
+        "usb_error", WARNING,
+        r"usb.*(device descriptor read.*error|unable to enumerate|cannot enable"
+        r"|over-?current)",
+        "Erreur USB, souvent d'alimentation. Une surintensité peut faire "
+        "chuter une ligne partagée avec autre chose.",
+    ),
+    _rule(
+        "thermal_trip", CRITICAL,
+        r"core temperature above threshold|package temperature above threshold"
+        r"|critical temperature reached|thermal.*(shutdown|trip point)"
+        r"|temperature above threshold, cpu clock throttled",
+        "Seuil thermique matériel franchi : le CPU s'est bridé lui-même. "
+        "LE signal recherché pour 'ventirad encrassé' et 'flux d'air obstrué'.",
+    ),
+    _rule(
+        "power_error", ERROR,
+        r"undervoltage detected|power supply.*(fail|error)|battery.*(critical|fail)"
+        r"|acpi.*power.*error",
+        "Anomalie d'alimentation signalée par le firmware.",
+    ),
+    _rule(
+        "acpi_error", WARNING,
+        r"acpi (bios )?error|acpi.*(aml error|_osc failed|namespace lookup failure"
+        r"|exception|ignoring invalid)",
+        "Erreur ACPI : firmware de la carte mère. Bruyant sur beaucoup de "
+        "cartes, à filtrer si ça pollue.",
+    ),
+    _rule(
+        "firmware_error", WARNING,
+        r"direct firmware load.*fail|firmware: failed to load|failed to load firmware"
+        r"|microcode sw error|firmware crash",
+        "Firmware d'un périphérique non chargé ou planté (Wi-Fi, GPU, contrôleur).",
+    ),
+    _rule(
+        "suspend_error", ERROR,
+        r"pm: suspend.*(fail|abort)|freezing of tasks failed|resume.*fail"
+        r"|acpi.*(sleep|wakeup).*error",
+        "Veille ou reprise ratée. Casse aussi les compteurs RAPL au réveil.",
+    ),
+    _rule(
+        "netdev_error", WARNING,
+        r"netdev watchdog.*transmit.*timed out|nic link is down|tx hang",
+        "Carte réseau bloquée : le pilote a dû la réinitialiser.",
+    ),
+)
 
 #: Ordre = priorité de correspondance. Le premier motif qui accroche gagne, donc
 #: le spécifique (mce_uncorrected) doit précéder le générique (mce).
-RULES: tuple[Rule, ...] = (CPU_RULES + STABILITY_RULES + MEMORY_RULES + GPU_RULES + STORAGE_RULES)
+RULES: tuple[Rule, ...] = (
+    CPU_RULES + STABILITY_RULES + MEMORY_RULES + GPU_RULES + STORAGE_RULES + BUS_RULES
+)
 
 #: Codes Xid NVIDIA les plus parlants. Le reste est enregistré en brut.
 XID_MEANINGS = {
