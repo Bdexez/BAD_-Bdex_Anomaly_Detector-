@@ -5,7 +5,7 @@ import unittest
 
 from collector import errors
 from collector.readers import kmsg
-from collector.readers.kmsg import Record, _KmsgBackend
+from collector.readers.kmsg import Record, _JournalBackend, _KmsgBackend
 
 
 
@@ -38,3 +38,26 @@ class KmsgParsingTest(unittest.TestCase):
                 self.assertIsNone(self.parse(raw))
 
 
+class JournalParsingTest(unittest.TestCase):
+    def test_parses_json_entry(self):
+        line = json.dumps({
+            "__CURSOR": "s=abc;i=1",
+            "__REALTIME_TIMESTAMP": "1700000000123456",
+            "PRIORITY": "3",
+            "MESSAGE": "EXT4-fs error (device sda1)",
+        }).encode()
+        rec = _JournalBackend._parse(line)
+        self.assertEqual(rec.ts_ms, 1700000000123)
+        self.assertEqual(rec.level, 3)
+        self.assertEqual(rec.dedup, "s=abc;i=1")
+
+    def test_binary_message_encoded_as_byte_list(self):
+        line = json.dumps({
+            "__CURSOR": "c", "__REALTIME_TIMESTAMP": "1000000",
+            "PRIORITY": "3", "MESSAGE": list(b"panic"),
+        }).encode()
+        self.assertEqual(_JournalBackend._parse(line).text, "panic")
+
+    def test_garbage_lines_are_dropped(self):
+        self.assertIsNone(_JournalBackend._parse(b"pas du json"))
+        self.assertIsNone(_JournalBackend._parse(b"{}"))

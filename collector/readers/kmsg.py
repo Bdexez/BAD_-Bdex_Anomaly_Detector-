@@ -132,5 +132,94 @@ class _KmsgBackend:
             pass
 
 
+class _JournalBackend:
+    """`journalctl -k -b -f` en JSON : un process, pas un par tick."""
+
+    name = "journalctl"
+    #: Suivi seul : `--since=now` évite de re-livrer l'historique, que
+    #: backfill() a déjà lu de façon déterministe.
+    FOLLOW = ("journalctl", "-k", "-f", "-o", "json", "--no-pager", "--since=now")
+    #: Rejeu : process court qui se termine, donc lecture jusqu'à EOF.
+    REPLAY = ("journalctl", "-k", "-b", "-o", "json", "--no-pager")
+
+    def __init__(self):
+        self.proc = subprocess.Popen(
+            self.FOLLOW,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        os.set_blocking(self.proc.stdout.fileno(), False)
+        self._buffer = b""
+
+    def records(self, limit: int) -> Iterator[Record]:
+        if self.proc.poll() is not None:
+            raise OSError(f"journalctl s'est arrêté (code {self.proc.returncode})")
+        while True:
+            try:
+                chunk = self.proc.stdout.read(65536)
+            except BlockingIOError:
+                chunk = None
+            if not chunk:
+                break
+            self._buffer += chunk
+            if len(self._buffer) > 8 << 20:  # garde-fou : 8 Mo de retard
+                self._buffer = self._buffer[-(1 << 20):]
+
+        count = 0
+        while count < limit and b"\n" in self._buffer:
+            line, _, self._buffer = self._buffer.partition(b"\n")
+            record = self._parse(line)
+            if record is not None:
+                count += 1
+                yield record
+
+    @staticmethod
+    def _parse(line: bytes) -> Record | None:
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        message = entry.get("MESSAGE")
+        if isinstance(message, list):  # journald encode le binaire en liste d'octets
+            message = bytes(message).decode("utf-8", "replace")
+        if not isinstance(message, str):
+            return None
+        try:
+            ts_ms = int(entry.get("__REALTIME_TIMESTAMP", 0)) // 1000
+            level = int(entry.get("PRIORITY", 6))
+        except (TypeError, ValueError):
+            return None
+        cursor = entry.get("__CURSOR")
+        return Record(ts_ms=ts_ms, level=level, text=message.strip(), dedup=cursor)
+
+    def backfill(self) -> Iterator[Record]:
+        """Relit le boot courant via un process qui se termine.
+
+        Lire l'historique dans le flux `-f` obligerait à deviner quand il est
+        fini ; ici l'EOF le dit.
+        """
+        try:
+            done = subprocess.run(
+                self.REPLAY,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=BACKFILL_TIMEOUT,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log.warning("rejeu journald impossible: %s", exc)
+            return
+        for line in done.stdout.splitlines()[:MAX_BACKFILL_RECORDS]:
+            record = self._parse(line)
+            if record is not None:
+                yield record
+
+    def close(self) -> None:
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        self.proc.stdout.close()
 
 
