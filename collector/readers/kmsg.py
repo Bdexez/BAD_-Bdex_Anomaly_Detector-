@@ -223,3 +223,103 @@ class _JournalBackend:
         self.proc.stdout.close()
 
 
+class KmsgReader(Reader):
+    """Classe chaque message noyau et enregistre les erreurs dans `events`.
+
+    Les colonnes produites comptent les erreurs **de ce tick**. Un événement
+    ponctuel ne peut pas vivre dans une série à 1 Hz — d'où la table `events` —
+    mais son décompte, lui, est une feature légitime : une rafale d'erreurs
+    corrigées juste avant un gel est exactement le motif qu'on veut apprendre.
+    """
+
+    name = "kmsg"
+    fields = ["kmsg_errors", "kmsg_criticals", "kmsg_messages"]
+
+    def __init__(self, boot: str = "", backend=None):
+        self.boot = boot
+        self.backend = backend
+        self.unavailable_reason = ""
+        self.backfilled = 0
+
+    def setup(self) -> bool:
+        if self.backend is None:
+            self.backend = self._open_backend()
+        if self.backend is None:
+            return False
+        # Rejeu du tampon existant : les erreurs du boot, et celles survenues
+        # pendant que le service était arrêté, ont autant de valeur que les
+        # suivantes. La clé de déduplication rend l'opération rejouable.
+        counts = self._consume(self.backend.backfill())
+        self.backfilled = int(counts["kmsg_errors"] + counts["kmsg_criticals"])
+        if self.backfilled:
+            log.info(
+                "%d erreur(s) noyau récupérée(s) dans le tampon existant", self.backfilled
+            )
+        return True
+
+    def _open_backend(self):
+        try:
+            return _KmsgBackend(boot=self.boot)
+        except PermissionError:
+            reason = "/dev/kmsg refusé (kernel.dmesg_restrict=1, il faut root)"
+        except OSError as exc:
+            reason = f"/dev/kmsg indisponible ({exc})"
+
+        if shutil.which("journalctl"):
+            try:
+                backend = _JournalBackend()
+            except OSError as exc:
+                self.unavailable_reason = f"{reason} ; journalctl a échoué ({exc})"
+                return None
+            log.info("%s ; repli sur journalctl", reason)
+            return backend
+
+        self.unavailable_reason = f"{reason} ; journalctl absent"
+        return None
+
+    def _consume(self, records: Iterator[Record]) -> dict[str, float]:
+        """Classe un flux d'enregistrements, enregistre les erreurs, compte."""
+        counts = {"kmsg_errors": 0.0, "kmsg_criticals": 0.0, "kmsg_messages": 0.0}
+        stored = 0
+        suppressed = 0
+        for record in records:
+            counts["kmsg_messages"] += 1
+            rule = errors.classify(record.text, record.level)
+            if rule is None:
+                continue
+            if rule.severity == errors.CRITICAL:
+                counts["kmsg_criticals"] += 1
+            else:
+                counts["kmsg_errors"] += 1
+
+            if stored >= MAX_EVENTS_PER_TICK:
+                suppressed += 1
+                continue
+            message = record.text
+            if rule.kind == "gpu_xid" and (detail := errors.describe_xid(message)):
+                message = f"{detail} — {message}"
+            if self.emit(
+                rule.kind,
+                message=message,
+                severity=rule.severity,
+                ts=record.ts_ms,
+                dedup=record.dedup,
+            ):
+                stored += 1
+
+        if suppressed:
+            # Une tempête reste un fait à enregistrer, même sans garder chaque ligne.
+            self.emit(
+                "event_storm",
+                message=f"{suppressed} message(s) d'erreur supplémentaires non détaillés",
+                severity=errors.WARNING,
+            )
+        return counts
+
+    def read(self) -> dict[str, float | None]:
+        return self._consume(self.backend.records(MAX_RECORDS_PER_TICK))
+
+    def close(self) -> None:
+        if self.backend is not None:
+            self.backend.close()
+            self.backend = None

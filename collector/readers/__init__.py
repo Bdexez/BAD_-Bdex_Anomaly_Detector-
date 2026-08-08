@@ -8,6 +8,7 @@ from .context import ContextReader
 from .gigabyte_wmi import GigabyteWmiReader
 from .hwmon import HwmonReader
 from .k10temp import K10TempReader
+from .kmsg import KmsgReader
 from .nvme import NvmeReader
 from .nvml import NvmlReader
 from .proc import ProcReader
@@ -20,6 +21,7 @@ __all__ = [
     "GigabyteWmiReader",
     "HwmonReader",
     "K10TempReader",
+    "KmsgReader",
     "NvmeReader",
     "NvmlReader",
     "ProcReader",
