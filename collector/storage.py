@@ -113,8 +113,40 @@ class Storage:
             raise
         return len(rows)
 
+    def add_event(
+        self,
+        ts: int,
+        source: str,
+        kind: str,
+        severity: str = "",
+        message: str = "",
+        dedup: str | None = None,
+    ) -> bool:
+        """Enregistre un événement discret. Retourne False si c'est un doublon.
 
+        `dedup` est une clé stable fournie par la source (numéro de séquence
+        kmsg, curseur journald). Elle rend le rejeu du tampon noyau idempotent :
+        redémarrer le collector trois fois ne crée pas trois fois la même MCE.
+        """
+        cur = self.conn.execute(
+            "INSERT OR IGNORE INTO events (ts, source, kind, severity, message, dedup)"
+            " VALUES (?,?,?,?,?,?)",
+            (ts, source, kind, severity, message[:4000], dedup),
+        )
+        return cur.rowcount > 0
 
+    def recent_events(self, limit: int = 20) -> list[tuple]:
+        return self.conn.execute(
+            "SELECT ts, source, kind, severity, message FROM events"
+            " ORDER BY ts DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def count_events_by_kind(self) -> list[tuple[str, str, int]]:
+        return self.conn.execute(
+            "SELECT source, kind, COUNT(*) FROM events GROUP BY source, kind"
+            " ORDER BY COUNT(*) DESC"
+        ).fetchall()
 
     # -- labels : l'annotation manuelle des expériences ---------------------
 
