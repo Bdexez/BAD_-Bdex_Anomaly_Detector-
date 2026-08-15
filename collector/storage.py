@@ -150,8 +150,32 @@ class Storage:
 
     # -- labels : l'annotation manuelle des expériences ---------------------
 
+    def start_label(self, ts: int, label: str, notes: str = "") -> int:
+        cur = self.conn.execute(
+            "INSERT INTO labels (ts_start, label, notes) VALUES (?, ?, ?)",
+            (ts, label, notes),
+        )
+        return int(cur.lastrowid)
 
+    def end_label(self, ts: int, label_id: int | None = None) -> int:
+        """Ferme un label ouvert (ou tous les labels ouverts si id absent)."""
+        if label_id is None:
+            cur = self.conn.execute(
+                "UPDATE labels SET ts_end = ? WHERE ts_end IS NULL", (ts,)
+            )
+        else:
+            cur = self.conn.execute(
+                "UPDATE labels SET ts_end = ? WHERE id = ? AND ts_end IS NULL",
+                (ts, label_id),
+            )
+        return cur.rowcount
 
+    def open_labels(self) -> list[sqlite3.Row]:
+        cur = self.conn.execute(
+            "SELECT id, ts_start, label, notes FROM labels WHERE ts_end IS NULL"
+            " ORDER BY ts_start"
+        )
+        return cur.fetchall()
 
     def count_samples(self) -> int:
         return int(self.conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0])

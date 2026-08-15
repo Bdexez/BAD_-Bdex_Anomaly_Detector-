@@ -56,6 +56,14 @@ class StorageTest(unittest.TestCase):
             self.storage.conn.execute("SELECT a FROM samples").fetchone(), (1.0,)
         )
 
+    def test_labels_lifecycle(self):
+        first = self.storage.start_label(100, "stress_ng", "essai")
+        self.storage.start_label(150, "gaming")
+        self.assertEqual(len(self.storage.open_labels()), 2)
+        self.assertEqual(self.storage.end_label(200, first), 1)
+        self.assertEqual(self.storage.end_label(200, first), 0)  # déjà fermé
+        self.assertEqual(self.storage.end_label(300), 1)  # ferme le reste
+        self.assertEqual(self.storage.open_labels(), [])
 
     def test_reopening_existing_db_keeps_columns(self):
         self.storage.ensure_columns(["a"])
