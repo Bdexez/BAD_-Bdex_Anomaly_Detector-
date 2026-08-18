@@ -202,11 +202,152 @@ class Collector:
         log.info("terminé proprement")
 
 
+def _cpu_model() -> str:
+    text = pathlib.Path("/proc/cpuinfo").read_text() if pathlib.Path("/proc/cpuinfo").exists() else ""
+    for line in text.splitlines():
+        if line.startswith("model name"):
+            return line.split(":", 1)[1].strip()
+    return platform.machine()
 
 
+def run_doctor() -> None:
+    """`--doctor` : ce que cette machine permet de mesurer et de détecter.
+
+    À lancer sur chaque machine : la couverture n'est pas la même partout, et
+    c'est cette sortie qui le dit — y compris ce qui N'EST PAS surveillé.
+    """
+    print(f"Machine   {platform.node()} · noyau {platform.release()}")
+    print(f"CPU       {_cpu_model()}")
+    print(f"hwmon     {', '.join(sorted(list_hwmon())) or 'aucun'}")
+    print(f"Droits    {'root' if os.geteuid() == 0 else 'utilisateur ordinaire'}")
+
+    print("\nSources de métriques")
+    counters = None
+    kmsg = None
+    for reader in candidate_readers(boot="doctor"):
+        try:
+            ok = reader.setup()
+        except Exception as exc:
+            print(f"  [!!] {reader.name:14} erreur de configuration: {exc}")
+            continue
+        if isinstance(reader, R.ErrorCounterReader) and ok:
+            counters = reader
+        if isinstance(reader, R.KmsgReader):
+            kmsg = reader
+        marker = "OK" if ok else "--"
+        detail = ", ".join(reader.fields) if ok else "absent de cette machine"
+        print(f"  [{marker}] {reader.name:14} {detail[:96]}")
+        if reader is not counters and reader is not kmsg:
+            reader.close()
+
+    print("\nDétection d'erreurs")
+    kinds = error_catalogue.catalogue()
+    print(f"  Étage 1  messages noyau : {len(error_catalogue.RULES)} règles, {len(kinds)} genres")
+    if kmsg is not None and kmsg.backend is not None:
+        print(f"           source active : {kmsg.backend.name}")
+        print(f"           tampon du boot courant : {kmsg.backfilled} erreur(s)")
+    else:
+        reason = kmsg.unavailable_reason if kmsg else "reader absent"
+        print(f"           INDISPONIBLE : {reason}")
+    print(f"  Étage 2  attrape-tout : toute erreur noyau de priorité <= "
+          f"{error_catalogue.KERNEL_ERROR_LEVEL} non classée")
+    if counters is not None:
+        print(f"  Étage 3  compteurs matériels : {len(counters.counters)} actifs")
+        for field, note in counters.describe():
+            print(f"           {field:20} {note.splitlines()[0][:70]}")
+        absent = counters.missing()
+        if absent:
+            print(f"           non exposés ici : {', '.join(absent)}")
+    else:
+        print("  Étage 3  compteurs matériels : aucun")
+
+    for reader in (kmsg, counters):
+        if reader is not None:
+            reader.close()
 
 
+def run_scan(top: int = 6) -> None:
+    """`--scan` : classe tout le tampon noyau du boot courant, sans écrire en base.
+
+    C'est l'outil à lancer sur chaque machine pour voir *ce qui est réellement
+    détecté* — et pour repérer un faux positif avant qu'il ne pollue 14 jours
+    de dataset.
+    """
+    found: list[tuple[str, str, str]] = []
+
+    def collect(source, kind, severity, message, ts=None, dedup=None):
+        found.append((kind, severity, message))
+        return True
+
+    for reader in (R.KmsgReader(boot="scan"), R.ErrorCounterReader()):
+        reader.emitter = collect
+        try:
+            if not reader.setup():
+                reason = getattr(reader, "unavailable_reason", "") or "indisponible"
+                print(f"[--] {reader.name}: {reason}")
+            reader.close()
+        except Exception as exc:
+            print(f"[!!] {reader.name}: {exc}")
+
+    if not found:
+        print("Aucune erreur détectée sur le boot courant.")
+        return
+
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for kind, severity, message in found:
+        groups.setdefault(kind, []).append((severity, message))
+
+    order = {error_catalogue.CRITICAL: 0, error_catalogue.ERROR: 1}
+    ranked = sorted(
+        groups.items(), key=lambda kv: (order.get(kv[1][0][0], 2), -len(kv[1]))
+    )
+    print(f"{len(found)} erreur(s) classée(s) sur le boot courant :\n")
+    for kind, entries in ranked:
+        severity = entries[0][0]
+        print(f"  {severity.upper():8} {kind:18} x{len(entries)}")
+        for _, message in entries[:top]:
+            print(f"           {message[:110]}")
+        if len(entries) > top:
+            print(f"           ... et {len(entries) - top} autre(s)")
+    criticals = sum(1 for _, sev, _ in found if sev == error_catalogue.CRITICAL)
+    print(f"\nVerdict : {criticals} critique(s). "
+          + ("Rien de bloquant." if not criticals else "À examiner avant de collecter."))
 
 
+def main() -> None:
+    ap = argparse.ArgumentParser(description="BAD — collecte de télémétrie matérielle")
+    ap.add_argument("--db", default="data/metrics.db")
+    ap.add_argument("--period", type=float, default=1.0, help="secondes entre deux samples")
+    ap.add_argument("--duration", type=float, help="arrêt automatique après N secondes")
+    ap.add_argument("--schema", type=pathlib.Path, default=SCHEMA)
+    ap.add_argument("--doctor", "--list-sensors", dest="doctor", action="store_true",
+                    help="ce que cette machine permet de mesurer et de détecter, puis sortie")
+    ap.add_argument("--scan", action="store_true",
+                    help="classe les erreurs du boot courant sans rien écrire en base")
+    ap.add_argument("-v", "--verbose", action="store_true")
+    args = ap.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    if args.doctor:
+        run_doctor()
+        return
+
+    if args.scan:
+        run_scan()
+        return
+
+    if args.period <= 0:
+        ap.error("--period doit être > 0")
+
+    collector = Collector(args.db, args.period, args.schema)
+    signal.signal(signal.SIGINT, collector.stop)
+    signal.signal(signal.SIGTERM, collector.stop)
+    collector.run(duration=args.duration)
 
 
+if __name__ == "__main__":
+    main()
