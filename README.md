@@ -202,3 +202,135 @@ mapping se détermine à l'expérience — le renommage se fera après coup par
 | `gaming` | charge réelle |
 | `normal` | tout le reste |
 
+## Détection d'erreurs
+
+C'est la table `events` : un événement ponctuel — une MCE dure une microseconde —
+ne peut pas exister dans une série échantillonnée à 1 Hz. Il lui faut un canal
+à part.
+
+« Toutes les erreurs possibles » n'existe pas comme liste finie : un pilote peut
+inventer demain un message qu'aucun motif ne connaît. La couverture repose donc
+sur **trois étages** dont chacun rattrape les angles morts des autres.
+
+### Étage 1 — Classement des messages noyau
+
+38 règles dans `collector/errors.py`, rangées en six familles : CPU/mémoire
+(MCE, APEI/GHES, ECC, microcode), stabilité (panic, oops, lockups, RCU stall,
+GPF), mémoire (OOM), GPU (Xid NVIDIA avec traduction du code, reset et fautes
+AMD, ECC vidéo), stockage (NVMe, ATA, bloc, corruption de FS) et bus
+(PCIe AER, lien, USB, seuil thermique, alimentation, ACPI, firmware, veille).
+
+Le fichier est **des données, pas du code** : un motif, un genre, une gravité et
+une phrase d'explication. Ajouter une règle ne demande pas de toucher au moteur.
+
+Deux sources, choisies au démarrage :
+
+| Source | Quand | Clé de déduplication |
+|--------|-------|----------------------|
+| `/dev/kmsg` | root (défaut sous systemd) | numéro de séquence |
+| `journalctl -k -f` | sans privilèges, si systemd | curseur journald |
+
+Aucune des deux ne forke par tick : `/dev/kmsg` est un descripteur ouvert une
+fois, `journalctl` un seul process pour toute la vie du daemon.
+
+**Le démarrage rejoue tout le tampon du boot courant.** Les erreurs survenues
+avant le lancement du collector — au boot, ou pendant que le service était
+arrêté — sont récupérées avec leur date d'origine. La clé de déduplication rend
+ce rejeu idempotent : redémarrer trois fois n'enregistre pas trois fois la même
+MCE.
+
+### Étage 2 — L'attrape-tout
+
+Tout enregistrement que le noyau marque lui-même en priorité ≤ 3 (err, crit,
+alert, emerg) et qu'aucune règle ne reconnaît est enregistré en `kernel_error`
+avec son texte brut. C'est ce qui évite de ne détecter que les pannes qu'on
+avait déjà imaginées.
+
+Contrepartie : le noyau émet en priorité « erreur » des messages qui décrivent
+un état normal (`TDX not supported`, `RAS: Correctable Errors collector
+initialized`…). Une liste `BENIGN` explicite les écarte — sans elle, chaque boot
+rajouterait les mêmes non-événements, et une constante présente dans 100 % des
+lignes n'apprend rien à un modèle. Elle se complète machine par machine, et
+`--scan` sert exactement à ça.
+
+### Étage 3 — Les compteurs matériels
+
+Indépendants du texte, et c'est ce qui fait leur valeur :
+
+* ils fonctionnent **sans privilèges**, là où `/dev/kmsg` exige root ;
+* ils attrapent ce que le noyau compte **sans forcément le journaliser** — une
+  erreur PCIe corrigée n'écrit rien dans `dmesg` si le rate-limit a frappé, mais
+  le compteur, lui, avance.
+
+| Colonne | Source | Ce que ça détecte |
+|---------|--------|-------------------|
+| `err_mce` | `/proc/interrupts` MCE | Machine Check comptée par le CPU |
+| `err_thermal_irq` | `/proc/interrupts` TRM | seuil thermique franchi ← ventirad encrassé |
+| `err_threshold_irq`, `err_deferred_irq` | THR, DFR | seuils et erreurs différées AMD |
+| `err_nmi` | NMI | alimentation, RAM, watchdog |
+| `err_oom_kill` | `/proc/vmstat` | process tués faute de mémoire |
+| `err_ecc_ce`, `err_ecc_ue` | EDAC | erreurs mémoire corrigées / non corrigées |
+| `err_aer_corr/nonfatal/fatal` | PCIe AER | qualité du lien PCIe |
+| `err_cpu_throttle`, `err_pkg_throttle` | `thermal_throttle` | bridages thermiques (Intel) |
+| `err_gpu_ras` | RAS amdgpu | ECC mémoire vidéo |
+| `err_disk_io` | `ioerr_cnt` | erreurs d'I/O SCSI |
+| `err_nvme_state` | `/sys/class/nvme/*/state` | contrôleur hors de l'état `live` |
+
+Chaque compteur est **à la fois un événement et une feature** : son delta par
+tick devient une colonne de `samples`, et tout mouvement écrit une ligne dans
+`events`. Une valeur non nulle **au démarrage** est signalée aussi : une machine
+qui compte déjà 4 000 erreurs ECC corrigées depuis le boot doit le dire au
+premier tick, pas attendre la 4 001e.
+
+### Couverture, machine par machine
+
+Elle n'est pas la même partout, et `--doctor` le dit — y compris ce qui n'est
+**pas** surveillé, ce qui vaut autant que le reste : sans contrôleur EDAC, une
+erreur mémoire corrigée ne laisse de trace nulle part.
+
+Relevé sur le portable (Ryzen 5 3500U, sans root) : 9 compteurs actifs ;
+`err_ecc_*` absents (mémoire sans ECC), `err_cpu_throttle` absent (compteur
+Intel), `err_gpu_ras` absent (iGPU), `err_disk_io` absent (NVMe, pas SCSI).
+Sur le desktop, attends-toi à voir apparaître les compteurs RAS du GPU et,
+selon la carte mère, EDAC.
+
+## Limites connues
+
+Les dire vaut mieux que faire semblant.
+
+* **Fréquence CPU.** `cpuinfo_avg_freq` (amd-pstate, noyaux récents) est une
+  mesure ; `scaling_cur_freq`, utilisé en repli, n'est qu'une consigne du
+  gouverneur et ment franchement sur AMD P-State. La vraie fréquence effective
+  demanderait de lire les MSR APERF/MPERF — hors périmètre.
+* **PSI.** On stocke `avg10`, déjà lissé par le noyau. Le compteur `total`
+  (cumulé, en µs) serait dérivable et plus précis ; il reste récupérable plus
+  tard si l'horizon de 14 jours le demande.
+* **`top_proc_cpu`** est un pourcentage d'**un** cœur : 400 % est possible sur un
+  process multithread. Le scan de `/proc` coûte quelques millisecondes par tick
+  sur ~500 process.
+* **Timestamps en `epoch ms`, clé primaire.** Deux ticks dans la même
+  milliseconde se remplacent. À 1 Hz c'est théorique ; avec `--period 0.001` ça
+  ne le serait plus.
+* **`is_gaming`** repose sur une liste d'indices volontairement courte. Chaque
+  entrée est une hypothèse sur le dataset ; c'est pour ça que le brut est
+  conservé à côté.
+* **iGPU.** `amdgpu_busy_pct` d'une iGPU mesure une puce qui partage son budget
+  thermique et sa mémoire avec le CPU : les corrélations n'y ont pas le même
+  sens que sur une carte dédiée.
+* **Horodatage des erreurs kmsg.** Les enregistrements `/dev/kmsg` sont datés en
+  µs depuis le boot sur une horloge qui ne compte pas le temps suspendu : après
+  une veille, un événement d'avant peut être daté de quelques minutes en avance.
+  Le backend journald, lui, donne un horodatage absolu exact.
+* **Erreurs pendant que le collector est arrêté.** Le rejeu couvre le tampon du
+  **boot courant** uniquement. Une erreur survenue lors d'un boot précédent
+  n'est pas récupérée — `journalctl -k -b -1` reste à faire à la main.
+* **La liste `BENIGN` est empirique.** Elle a été construite sur les messages
+  réellement observés ; un pilote présent seulement sur l'autre machine peut
+  introduire un nouveau faux positif. C'est à ça que sert `--scan` avant de
+  lancer une collecte de 14 jours.
+
+## Dépendances
+
+Aucune obligatoire : `/proc`, `/sys` et la stdlib (`sqlite3` inclus) suffisent.
+`nvidia-ml-py` est optionnel et n'intéresse que les machines NVIDIA — sans lui,
+`NvmlReader` se désactive proprement au démarrage.
