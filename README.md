@@ -131,7 +131,7 @@ collector/
 schema.sql            squelette invariant de la base
 ```
 
-## Modèle de données
+## 🗃️ Modèle de données
 
 Format **wide** : ~50 colonnes `REAL`, une ligne par seconde. 14 jours à 1 Hz
 font ~1,2 M lignes ; en narrow (`ts, metric, value`) ce serait 60 M pour la même
@@ -139,35 +139,40 @@ information. Les colonnes sont ajoutées dynamiquement (`ALTER TABLE ADD COLUMN`
 est O(1) en SQLite), donc ajouter un reader ne casse pas une base existante :
 les anciennes lignes portent simplement `NULL`.
 
-| Table    | Rôle |
-|----------|------|
-| `samples` | les séries, une ligne par tick, indexées par `(boot_id, ts)` |
-| `boots`   | un boot = un contexte (chemins renumérotés, compteurs RAPL remis à zéro) |
-| `events`  | événements discrets : WHEA, MCE, OOM, reset GPU, panne de reader |
-| `labels`  | fenêtres d'expériences annotées à la main |
+| Table       | Rôle                                                                     |
+|-------------|--------------------------------------------------------------------------|
+| `samples`   | les séries, une ligne par tick, indexées par `(boot_id, ts)`             |
+| `boots`     | un boot = un contexte (chemins renumérotés, compteurs RAPL remis à zéro) |
+| `events`    | événements discrets : WHEA, MCE, OOM, reset GPU, panne de reader         |
+| `labels`    | fenêtres d'expériences annotées à la main                                |
 
-**SQLite et pas PostgreSQL** : un seul writer, local, pas de réseau, pas de
-concurrence. En WAL, SQLite encaisse 1 Hz sans transpirer et le fichier unique
-se copie et se versionne trivialement. Postgres ici serait de la complexité
-gratuite.
+> 💡 **SQLite et pas PostgreSQL** — un seul writer, local, pas de réseau, pas de
+> concurrence. En WAL, SQLite encaisse 1 Hz sans transpirer et le fichier unique
+> se copie et se versionne trivialement. Postgres ici serait de la complexité
+> gratuite.
 
-## Ce que chaque reader collecte
+## 📊 Ce que chaque reader collecte
 
-| Reader | Colonnes | Notes |
-|--------|----------|-------|
-| `kmsg` | `kmsg_errors`, `kmsg_criticals`, `kmsg_messages` | erreurs noyau classées, écrites dans `events` |
-| `errcounters` | `err_mce`, `err_thermal_irq`, `err_aer_*`, `err_ecc_*`… | compteurs matériels, sans privilèges |
-| `k10temp` | `k10temp_tctl`, `k10temp_tccd1`… | nommées d'après `tempN_label`, pas d'après `N` |
-| `gigabyte_wmi` | `gigabyte_temp1..6` | sondes non labellisées, cf. protocole ci-dessous |
-| `rapl` | `rapl_pkg_watts`, `rapl_core_watts` | puissance dérivée, root requis |
-| `nvml` | `gpu_temp`, `gpu_power_w`, `gpu_throttle_mask`… | GPU NVIDIA |
-| `amdgpu` | `amdgpu_edge`, `amdgpu_sclk_mhz`, `amdgpu_busy_pct`… | GPU/iGPU AMD |
-| `nvme` | `nvme_composite`… | un reader par disque |
-| `psi` | `psi_cpu_some`, `psi_io_full`… | contention, pas utilisation |
-| `proc` | `cpu_util`, `cpuN_util`, `load1`, `mem_used_mb`, `cpu_freq_avg` | dérivées de jiffies |
-| `context` | `uptime_s`, `top_proc_cpu`, `is_gaming`, `active_window`… | le contexte d'usage |
+| Reader          | Colonnes                                                           | Notes                                                    |
+|-----------------|-------------------------------------------------------------------|----------------------------------------------------------|
+| `kmsg`          | `kmsg_errors`, `kmsg_criticals`, `kmsg_messages`                  | erreurs noyau classées, écrites dans `events`            |
+| `errcounters`   | `err_mce`, `err_thermal_irq`, `err_aer_*`, `err_ecc_*`…           | compteurs matériels, sans privilèges                     |
+| `k10temp`       | `k10temp_tctl`, `k10temp_tccd1`…                                  | nommées d'après `tempN_label`, pas d'après `N`           |
+| `gigabyte_wmi`  | `gigabyte_temp1..6`                                               | sondes non labellisées, cf. protocole ci-dessous         |
+| `rapl`          | `rapl_pkg_watts`, `rapl_core_watts`                              | puissance dérivée, root requis                           |
+| `nvml`          | `gpu_temp`, `gpu_power_w`, `gpu_throttle_mask`…                   | GPU NVIDIA                                                |
+| `amdgpu`        | `amdgpu_edge`, `amdgpu_sclk_mhz`, `amdgpu_busy_pct`…             | GPU/iGPU AMD                                              |
+| `nvme`          | `nvme_composite`…                                                 | un reader par disque                                     |
+| `psi`           | `psi_cpu_some`, `psi_io_full`…                                    | contention, pas utilisation                              |
+| `proc`          | `cpu_util`, `cpuN_util`, `load1`, `mem_used_mb`, `cpu_freq_avg`   | dérivées de jiffies                                      |
+| `context`       | `uptime_s`, `top_proc_cpu`, `is_gaming`, `active_window`…         | le contexte d'usage                                      |
 
 Trois d'entre eux méritent un mot.
+
+<details>
+<summary><b>⚡ RAPL — un compteur d'énergie, pas un capteur de puissance</b></summary>
+
+<br>
 
 **RAPL** n'est pas un capteur de puissance mais un compteur d'énergie cumulée en
 µJ. On dérive `P = ΔE / Δt`, et le compteur **reboucle** à
@@ -178,19 +183,34 @@ symétrique (compteur remis à zéro au réveil de veille, alors que
 `CLOCK_MONOTONIC` n'a pas avancé) donne un pic aberrant : il est borné et
 remplacé par `NULL`. Un trou dans les données vaut mieux qu'un pic inventé.
 
+</details>
+
+<details>
+<summary><b>📉 PSI — la contention, pas l'utilisation</b></summary>
+
+<br>
+
 **PSI** mesure la **contention**, pas l'utilisation. Un CPU à 100 % peut avoir un
 PSI nul (personne n'attend) ; un CPU à 40 % avec un PSI à 30 signifie que des
 tâches sont bloquées. C'est exactement le signal qui apparaît quand un système
 dérive alors que les métriques classiques restent vertes.
 
-**NVML plutôt que `nvidia-smi`** : `nvidia-smi` forke un process et met ~200 ms.
-À 1 Hz, on passerait 20 % du CPU à mesurer le CPU. NVML est un appel de
-bibliothèque, ~50 µs. `gpu_throttle_mask` y est la métrique la plus précieuse :
-le hardware dit lui-même *pourquoi* il se limite (thermique, power cap, voltage
-reliability). C'est un label gratuit, stocké en bitmask brut et décomposé plus
-tard au feature engineering.
+</details>
 
-## Le contexte, ou pourquoi ce n'est pas un notebook Kaggle
+<details>
+<summary><b>🎮 NVML plutôt que <code>nvidia-smi</code></b></summary>
+
+<br>
+
+`nvidia-smi` forke un process et met ~200 ms. À 1 Hz, on passerait 20 % du CPU à
+mesurer le CPU. NVML est un appel de bibliothèque, ~50 µs. `gpu_throttle_mask` y
+est la métrique la plus précieuse : le hardware dit lui-même *pourquoi* il se
+limite (thermique, power cap, voltage reliability). C'est un label gratuit,
+stocké en bitmask brut et décomposé plus tard au feature engineering.
+
+</details>
+
+## 🧭 Le contexte, ou pourquoi ce n'est pas un notebook Kaggle
 
 Sans contexte, le modèle apprend « GPU chaud = anomalie » et alerte dès qu'on
 lance un jeu. Avec contexte, il apprend « GPU chaud **alors que rien ne tourne**
@@ -199,11 +219,11 @@ lance un jeu. Avec contexte, il apprend « GPU chaud **alors que rien ne tourne*
 `is_gaming` est une décision de design, pas une évidence. Elle est ici
 **tri-valuée** :
 
-* `1` — la fenêtre active porte un indice connu (`steam_app`, `gamescope`,
-  `lutris`, `wine`…) ;
-* `0` — la fenêtre active est connue et ne correspond à aucun indice ;
-* `NULL` — aucune information (daemon lancé hors session graphique, compositeur
-  injoignable).
+| Valeur  | Signification                                                                    |
+|:-------:|---------------------------------------------------------------------------------|
+| `1`     | la fenêtre active porte un indice connu (`steam_app`, `gamescope`, `lutris`, `wine`…) |
+| `0`     | la fenêtre active est connue et ne correspond à aucun indice                      |
+| `NULL`  | aucune information (daemon lancé hors session graphique, compositeur injoignable) |
 
 Écrire `0` dans le dernier cas reviendrait à affirmer « pas de jeu » alors qu'on
 ne sait rien. Pour la même raison, `active_window` et `top_proc_name` sont
@@ -213,7 +233,7 @@ collectées, alors que l'heuristique, elle, se recalcule à volonté.
 Le compositeur est interrogé par socket IPC Hyprland (pas `hyprctl`, qui forke)
 et au plus toutes les 5 secondes.
 
-## Protocoles expérimentaux
+## 🧪 Protocoles expérimentaux
 
 ### Identifier les 6 sondes `gigabyte_wmi`
 
@@ -226,18 +246,18 @@ mapping se détermine à l'expérience — le renommage se fera après coup par
 2. charge GPU seule → la sonde qui suit est côté PCIe/chipset ;
 3. machine au repos, fenêtre ouverte → la sonde qui suit l'ambiante.
 
-À consigner ici quand ce sera fait.
+> 📝 À consigner ici quand ce sera fait.
 
 ### Familles d'anomalies visées
 
-| Label | Provocation |
-|-------|-------------|
-| `fan_curve_low` | courbe de ventilation abaissée dans le BIOS |
-| `airflow_blocked` | grille d'entrée d'air obstruée |
-| `oc_unstable` | OC/undervolt hors marge → WHEA dans `events` |
-| `stress_ng` | charge synthétique de référence |
-| `gaming` | charge réelle |
-| `normal` | tout le reste |
+| Label             | Provocation                                          |
+|-------------------|------------------------------------------------------|
+| `fan_curve_low`   | courbe de ventilation abaissée dans le BIOS          |
+| `airflow_blocked` | grille d'entrée d'air obstruée                       |
+| `oc_unstable`     | OC/undervolt hors marge → WHEA dans `events`         |
+| `stress_ng`       | charge synthétique de référence                      |
+| `gaming`          | charge réelle                                        |
+| `normal`          | tout le reste                                        |
 
 ## Détection d'erreurs
 
