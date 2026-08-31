@@ -2,66 +2,67 @@
 
 # 🩺 BAD — Bdex Anomaly Detector
 
-**Télémétrie matérielle à 1 Hz sur Linux, pour construire un dataset labellisé
-et y entraîner un détecteur d'anomalies.**
+**Hardware telemetry at 1 Hz on Linux, to build a labelled dataset and train an
+anomaly detector on it.**
 
 <br>
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black)
 ![Storage](https://img.shields.io/badge/storage-SQLite%20(WAL)-003B57?logo=sqlite&logoColor=white)
-![Dependencies](https://img.shields.io/badge/dépendances-0%20obligatoire-success)
+![Dependencies](https://img.shields.io/badge/dependencies-0%20required-success)
 
 </div>
 
 ---
 
-Cibles visées : ventirad encrassé, courbe de ventilation trop basse, flux d'air
-obstrué, OC instable.
+Targets: clogged heatsink, fan curve set too low, blocked airflow, unstable
+overclock.
 
-Ce dépôt contient l'**étage de collecte**. Sans données propres et
-contextualisées, l'étage modèle n'a rien à apprendre — c'est donc celui-là qu'on
-soigne en premier.
+This repository contains the **collection stage**. Without clean, contextualised
+data, the model stage has nothing to learn from — so that is the one we take care
+of first.
 
 <details>
-<summary><b>📑 Sommaire</b></summary>
+<summary><b>📑 Contents</b></summary>
 
-- [Principe](#principe)
-- [Démarrage rapide](#-démarrage-rapide)
-  - [Annoter les expériences](#annoter-les-expériences)
+- [Principle](#principle)
+- [Quick start](#-quick-start)
+  - [Annotating experiments](#annotating-experiments)
   - [Tests](#tests)
-- [Organisation](#-organisation)
-- [Modèle de données](#-modèle-de-données)
-- [Ce que chaque reader collecte](#-ce-que-chaque-reader-collecte)
-- [Le contexte](#-le-contexte-ou-pourquoi-ce-nest-pas-un-notebook-kaggle)
-- [Protocoles expérimentaux](#-protocoles-expérimentaux)
-- [Détection d'erreurs](#-détection-derreurs)
-- [Limites connues](#-limites-connues)
-- [Dépendances](#-dépendances)
+- [Layout](#-layout)
+- [Data model](#-data-model)
+- [What each reader collects](#-what-each-reader-collects)
+- [Context](#-context-or-why-this-is-not-a-kaggle-notebook)
+- [Experimental protocols](#-experimental-protocols)
+- [Error detection](#-error-detection)
+- [Known limitations](#-known-limitations)
+- [Dependencies](#-dependencies)
 
 </details>
 
-## Principe
+## Principle
 
-Un *reader* = une source de métriques. Il déclare ses colonnes, se configure au
-démarrage, renvoie un dict par tick, et **ne lève jamais d'exception dans
-`read()`**. Le collector doit survivre à la perte d'un capteur.
+A *reader* = one source of metrics. It declares its columns, configures itself at
+startup, returns one dict per tick, and **never raises inside `read()`**. The
+collector has to survive losing a sensor.
 
-Trois règles structurent tout le reste :
+Three rules structure everything else:
 
-> **1. Rien n'est codé en dur.**
-> Les chemins hwmon sont résolus par le contenu du fichier `name`, jamais par le
-> numéro (`hwmon2` est `k10temp` aujourd'hui et `hwmon4` après le prochain
-> reboot). Le nombre de threads CPU, les zones RAPL et les sondes de température
-> sont découverts au démarrage.
+> **1. Nothing is hard-coded.**
+> hwmon paths are resolved by the contents of the `name` file, never by number
+> (`hwmon2` is `k10temp` today and `hwmon4` after the next reboot). The number of
+> CPU threads, the RAPL zones and the temperature probes are discovered at
+> startup.
 
-> **2. Une source absente se désactive, elle ne remplit pas la base de NULL.**
-> `setup()` renvoie `False` et le reader disparaît du schéma. Le même dépôt
-> tourne sur un desktop 7600X + RTX 3060 Ti et sur un portable Ryzen à iGPU.
+> **2. A missing source disables itself, it does not fill the database with NULLs.**
+> `setup()` returns `False` and the reader disappears from the schema. The same
+> repository runs on a 7600X + RTX 3060 Ti desktop and on a Ryzen laptop with an
+> iGPU.
 
-> **3. On ne devine jamais un label.**
-> Quand l'information manque, la colonne vaut `NULL`, pas `0` — un faux label
-> pollue tout le dataset en aval.
+> **3. A label is never guessed.**
+> When the information is missing, the column is `NULL`, not `0` — one wrong
+> label pollutes the whole downstream dataset.
 
 ## 🚀 Démarrage rapide
 
