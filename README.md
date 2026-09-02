@@ -64,34 +64,34 @@ Three rules structure everything else:
 > When the information is missing, the column is `NULL`, not `0` — one wrong
 > label pollutes the whole downstream dataset.
 
-## 🚀 Démarrage rapide
+## 🚀 Quick start
 
 ```bash
-# Ce que CETTE machine permet de mesurer et de détecter (à lancer sur chacune).
+# What THIS machine makes it possible to measure and detect (run it on each one).
 python -m collector.main --doctor
 
-# Classe toutes les erreurs du boot courant, sans rien écrire en base.
+# Classify every error of the current boot, without writing anything to the database.
 python -m collector.main --scan
 
-# Collecte (sans root : tout sauf RAPL).
+# Collection (without root: everything except RAPL).
 python -m collector.main --db data/metrics.db --period 1.0
 
-# Avec RAPL (energy_uj est en 0400).
+# With RAPL (energy_uj is 0400).
 sudo python -m collector.main --db data/metrics.db --period 1.0
 
-# Essai court.
-python -m collector.main --db /tmp/essai.db --period 0.5 --duration 30 -v
+# Short run.
+python -m collector.main --db /tmp/trial.db --period 0.5 --duration 30 -v
 ```
 
-> 🛠️ **En service** : voir [`systemd/bad-collector.service`](systemd/bad-collector.service).
+> 🛠️ **As a service**: see [`systemd/bad-collector.service`](systemd/bad-collector.service).
 
-### Annoter les expériences
+### Annotating experiments
 
-C'est la valeur ajoutée du projet : la vérité terrain qu'aucun capteur ne donne.
+This is the project's added value: the ground truth no sensor gives you.
 
 ```bash
-python -m collector.label start airflow_blocked -n "grille avant obstruée"
-# ... l'expérience tourne ...
+python -m collector.label start airflow_blocked -n "front intake blocked"
+# ... the experiment runs ...
 python -m collector.label end
 python -m collector.label list
 ```
@@ -102,34 +102,34 @@ python -m collector.label list
 python -m unittest discover -s tests -t .
 ```
 
-Les tests montent de faux `/sys` et `/proc` : on vérifie le wrap RAPL sans
-attendre 4 secondes de charge, et la découverte `gigabyte_wmi` sans carte
-Gigabyte.
+The tests mount fake `/sys` and `/proc` trees: we check the RAPL wrap without
+waiting 4 seconds of load, and the `gigabyte_wmi` discovery without a Gigabyte
+board.
 
-## 🗂️ Organisation
+## 🗂️ Layout
 
 ```
 collector/
-├─ main.py            boucle à cadence fixe, cycle de vie des readers
-├─ storage.py         SQLite (schéma évolutif, batch, events dédupliqués, labels)
-├─ registry.py        résolution sysfs (hwmon par nom, lectures tolérantes)
-├─ errors.py          CATALOGUE des erreurs détectables (données, pas code)
-├─ label.py           CLI d'annotation des expériences
+├─ main.py            fixed-rate loop, reader lifecycle
+├─ storage.py         SQLite (evolving schema, batching, deduplicated events, labels)
+├─ registry.py        sysfs resolution (hwmon by name, tolerant reads)
+├─ errors.py          CATALOGUE of detectable errors (data, not code)
+├─ label.py           experiment annotation CLI
 └─ readers/
-   ├─ base.py         contrat Reader + ReaderState (pannes, canal d'événements)
-   ├─ kmsg.py         erreurs noyau (/dev/kmsg ou journalctl)
-   ├─ errcounters.py  compteurs d'erreurs matérielles (sans root)
-   ├─ hwmon.py        socle de découverte hwmon partagé
-   ├─ k10temp.py      températures CPU AMD
-   ├─ gigabyte_wmi.py 6 sondes carte mère Gigabyte
-   ├─ amdgpu.py       GPU/iGPU AMD
-   ├─ nvme.py         températures SSD
-   ├─ nvml.py         GPU NVIDIA (NVML, pas nvidia-smi)
-   ├─ rapl.py         puissance CPU dérivée des compteurs d'énergie
+   ├─ base.py         Reader contract + ReaderState (failures, event channel)
+   ├─ kmsg.py         kernel errors (/dev/kmsg or journalctl)
+   ├─ errcounters.py  hardware error counters (no root needed)
+   ├─ hwmon.py        shared hwmon discovery base
+   ├─ k10temp.py      AMD CPU temperatures
+   ├─ gigabyte_wmi.py 6 Gigabyte motherboard probes
+   ├─ amdgpu.py       AMD GPU/iGPU
+   ├─ nvme.py         SSD temperatures
+   ├─ nvml.py         NVIDIA GPU (NVML, not nvidia-smi)
+   ├─ rapl.py         CPU power derived from energy counters
    ├─ psi.py          Pressure Stall Information
-   ├─ proc.py         CPU/mémoire/fréquence depuis /proc
-   └─ context.py      ce que la machine était en train de faire
-schema.sql            squelette invariant de la base
+   ├─ proc.py         CPU/memory/frequency from /proc
+   └─ context.py      what the machine was doing
+schema.sql            invariant skeleton of the database
 ```
 
 ## 🗃️ Modèle de données
