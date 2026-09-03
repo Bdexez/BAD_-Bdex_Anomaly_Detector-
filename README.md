@@ -132,82 +132,81 @@ collector/
 schema.sql            invariant skeleton of the database
 ```
 
-## 🗃️ Modèle de données
+## 🗃️ Data model
 
-Format **wide** : ~50 colonnes `REAL`, une ligne par seconde. 14 jours à 1 Hz
-font ~1,2 M lignes ; en narrow (`ts, metric, value`) ce serait 60 M pour la même
-information. Les colonnes sont ajoutées dynamiquement (`ALTER TABLE ADD COLUMN`
-est O(1) en SQLite), donc ajouter un reader ne casse pas une base existante :
-les anciennes lignes portent simplement `NULL`.
+**Wide** format: ~50 `REAL` columns, one row per second. 14 days at 1 Hz is
+~1.2 M rows; in narrow form (`ts, metric, value`) that would be 60 M for the same
+information. Columns are added dynamically (`ALTER TABLE ADD COLUMN` is O(1) in
+SQLite), so adding a reader does not break an existing database: older rows
+simply carry `NULL`.
 
-| Table       | Rôle                                                                     |
-|-------------|--------------------------------------------------------------------------|
-| `samples`   | les séries, une ligne par tick, indexées par `(boot_id, ts)`             |
-| `boots`     | un boot = un contexte (chemins renumérotés, compteurs RAPL remis à zéro) |
-| `events`    | événements discrets : WHEA, MCE, OOM, reset GPU, panne de reader         |
-| `labels`    | fenêtres d'expériences annotées à la main                                |
+| Table       | Role                                                                      |
+|-------------|---------------------------------------------------------------------------|
+| `samples`   | the series, one row per tick, indexed by `(boot_id, ts)`                  |
+| `boots`     | a boot = a context (renumbered paths, RAPL counters reset)                |
+| `events`    | discrete events: WHEA, MCE, OOM, GPU reset, reader failure                |
+| `labels`    | hand-annotated experiment windows                                         |
 
-> 💡 **SQLite et pas PostgreSQL** — un seul writer, local, pas de réseau, pas de
-> concurrence. En WAL, SQLite encaisse 1 Hz sans transpirer et le fichier unique
-> se copie et se versionne trivialement. Postgres ici serait de la complexité
-> gratuite.
+> 💡 **SQLite and not PostgreSQL** — a single writer, local, no network, no
+> concurrency. In WAL mode, SQLite handles 1 Hz without breaking a sweat and the
+> single file is trivially copied and versioned. Postgres here would be
+> gratuitous complexity.
 
-## 📊 Ce que chaque reader collecte
+## 📊 What each reader collects
 
-| Reader          | Colonnes                                                           | Notes                                                    |
-|-----------------|-------------------------------------------------------------------|----------------------------------------------------------|
-| `kmsg`          | `kmsg_errors`, `kmsg_criticals`, `kmsg_messages`                  | erreurs noyau classées, écrites dans `events`            |
-| `errcounters`   | `err_mce`, `err_thermal_irq`, `err_aer_*`, `err_ecc_*`…           | compteurs matériels, sans privilèges                     |
-| `k10temp`       | `k10temp_tctl`, `k10temp_tccd1`…                                  | nommées d'après `tempN_label`, pas d'après `N`           |
-| `gigabyte_wmi`  | `gigabyte_temp1..6`                                               | sondes non labellisées, cf. protocole ci-dessous         |
-| `rapl`          | `rapl_pkg_watts`, `rapl_core_watts`                              | puissance dérivée, root requis                           |
-| `nvml`          | `gpu_temp`, `gpu_power_w`, `gpu_throttle_mask`…                   | GPU NVIDIA                                                |
-| `amdgpu`        | `amdgpu_edge`, `amdgpu_sclk_mhz`, `amdgpu_busy_pct`…             | GPU/iGPU AMD                                              |
-| `nvme`          | `nvme_composite`…                                                 | un reader par disque                                     |
-| `psi`           | `psi_cpu_some`, `psi_io_full`…                                    | contention, pas utilisation                              |
-| `proc`          | `cpu_util`, `cpuN_util`, `load1`, `mem_used_mb`, `cpu_freq_avg`   | dérivées de jiffies                                      |
-| `context`       | `uptime_s`, `top_proc_cpu`, `is_gaming`, `active_window`…         | le contexte d'usage                                      |
+| Reader          | Columns                                                            | Notes                                                    |
+|-----------------|--------------------------------------------------------------------|----------------------------------------------------------|
+| `kmsg`          | `kmsg_errors`, `kmsg_criticals`, `kmsg_messages`                  | classified kernel errors, written to `events`            |
+| `errcounters`   | `err_mce`, `err_thermal_irq`, `err_aer_*`, `err_ecc_*`…           | hardware counters, no privileges needed                  |
+| `k10temp`       | `k10temp_tctl`, `k10temp_tccd1`…                                  | named after `tempN_label`, not after `N`                 |
+| `gigabyte_wmi`  | `gigabyte_temp1..6`                                               | unlabelled probes, see the protocol below                |
+| `rapl`          | `rapl_pkg_watts`, `rapl_core_watts`                               | derived power, root required                             |
+| `nvml`          | `gpu_temp`, `gpu_power_w`, `gpu_throttle_mask`…                   | NVIDIA GPU                                                |
+| `amdgpu`        | `amdgpu_edge`, `amdgpu_sclk_mhz`, `amdgpu_busy_pct`…              | AMD GPU/iGPU                                              |
+| `nvme`          | `nvme_composite`…                                                 | one reader per disk                                      |
+| `psi`           | `psi_cpu_some`, `psi_io_full`…                                    | contention, not utilisation                              |
+| `proc`          | `cpu_util`, `cpuN_util`, `load1`, `mem_used_mb`, `cpu_freq_avg`   | derived from jiffies                                     |
+| `context`       | `uptime_s`, `top_proc_cpu`, `is_gaming`, `active_window`…         | usage context                                            |
 
-Trois d'entre eux méritent un mot.
+Three of them deserve a word.
 
 <details>
-<summary><b>⚡ RAPL — un compteur d'énergie, pas un capteur de puissance</b></summary>
+<summary><b>⚡ RAPL — an energy counter, not a power sensor</b></summary>
 
 <br>
 
-**RAPL** n'est pas un capteur de puissance mais un compteur d'énergie cumulée en
-µJ. On dérive `P = ΔE / Δt`, et le compteur **reboucle** à
-`max_energy_range_uj` (~262 J, soit ~4 s à 65 W : ça arrive en permanence). Sans
-traitement du wrap, on obtient des puissances négatives toutes les quelques
-secondes — et le détecteur d'anomalies passe sa vie à détecter ce bug-là. Le cas
-symétrique (compteur remis à zéro au réveil de veille, alors que
-`CLOCK_MONOTONIC` n'a pas avancé) donne un pic aberrant : il est borné et
-remplacé par `NULL`. Un trou dans les données vaut mieux qu'un pic inventé.
+**RAPL** is not a power sensor but a cumulative energy counter in µJ. We derive
+`P = ΔE / Δt`, and the counter **wraps** at `max_energy_range_uj` (~262 J, i.e.
+~4 s at 65 W: it happens constantly). Without handling the wrap, you get negative
+power readings every few seconds — and the anomaly detector spends its life
+detecting that bug. The symmetric case (counter reset when waking from sleep,
+while `CLOCK_MONOTONIC` has not advanced) produces an absurd spike: it is bounded
+and replaced by `NULL`. A hole in the data beats an invented spike.
 
 </details>
 
 <details>
-<summary><b>📉 PSI — la contention, pas l'utilisation</b></summary>
+<summary><b>📉 PSI — contention, not utilisation</b></summary>
 
 <br>
 
-**PSI** mesure la **contention**, pas l'utilisation. Un CPU à 100 % peut avoir un
-PSI nul (personne n'attend) ; un CPU à 40 % avec un PSI à 30 signifie que des
-tâches sont bloquées. C'est exactement le signal qui apparaît quand un système
-dérive alors que les métriques classiques restent vertes.
+**PSI** measures **contention**, not utilisation. A CPU at 100 % can have zero
+PSI (nobody is waiting); a CPU at 40 % with a PSI of 30 means tasks are blocked.
+That is exactly the signal that appears when a system drifts while the classic
+metrics stay green.
 
 </details>
 
 <details>
-<summary><b>🎮 NVML plutôt que <code>nvidia-smi</code></b></summary>
+<summary><b>🎮 NVML rather than <code>nvidia-smi</code></b></summary>
 
 <br>
 
-`nvidia-smi` forke un process et met ~200 ms. À 1 Hz, on passerait 20 % du CPU à
-mesurer le CPU. NVML est un appel de bibliothèque, ~50 µs. `gpu_throttle_mask` y
-est la métrique la plus précieuse : le hardware dit lui-même *pourquoi* il se
-limite (thermique, power cap, voltage reliability). C'est un label gratuit,
-stocké en bitmask brut et décomposé plus tard au feature engineering.
+`nvidia-smi` forks a process and takes ~200 ms. At 1 Hz, we would spend 20 % of
+the CPU measuring the CPU. NVML is a library call, ~50 µs. `gpu_throttle_mask` is
+the most valuable metric there: the hardware itself says *why* it is limiting
+itself (thermal, power cap, voltage reliability). That is a free label, stored as
+a raw bitmask and decomposed later at feature engineering time.
 
 </details>
 
