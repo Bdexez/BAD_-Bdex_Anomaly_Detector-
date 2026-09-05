@@ -210,54 +210,53 @@ a raw bitmask and decomposed later at feature engineering time.
 
 </details>
 
-## 🧭 Le contexte, ou pourquoi ce n'est pas un notebook Kaggle
+## 🧭 Context, or why this is not a Kaggle notebook
 
-Sans contexte, le modèle apprend « GPU chaud = anomalie » et alerte dès qu'on
-lance un jeu. Avec contexte, il apprend « GPU chaud **alors que rien ne tourne**
-= anomalie ».
+Without context, the model learns "hot GPU = anomaly" and alerts as soon as you
+start a game. With context, it learns "hot GPU **while nothing is running** =
+anomaly".
 
-`is_gaming` est une décision de design, pas une évidence. Elle est ici
-**tri-valuée** :
+`is_gaming` is a design decision, not an obvious one. It is **three-valued** here:
 
-| Valeur  | Signification                                                                    |
-|:-------:|---------------------------------------------------------------------------------|
-| `1`     | la fenêtre active porte un indice connu (`steam_app`, `gamescope`, `lutris`, `wine`…) |
-| `0`     | la fenêtre active est connue et ne correspond à aucun indice                      |
-| `NULL`  | aucune information (daemon lancé hors session graphique, compositeur injoignable) |
+| Value   | Meaning                                                                          |
+|:-------:|----------------------------------------------------------------------------------|
+| `1`     | the active window carries a known hint (`steam_app`, `gamescope`, `lutris`, `wine`…) |
+| `0`     | the active window is known and matches no hint                                    |
+| `NULL`  | no information (daemon started outside a graphical session, compositor unreachable) |
 
-Écrire `0` dans le dernier cas reviendrait à affirmer « pas de jeu » alors qu'on
-ne sait rien. Pour la même raison, `active_window` et `top_proc_name` sont
-stockés **en TEXT brut** : on ne peut pas ré-étiqueter des données qu'on n'a pas
-collectées, alors que l'heuristique, elle, se recalcule à volonté.
+Writing `0` in the last case would amount to asserting "no game" when we know
+nothing. For the same reason, `active_window` and `top_proc_name` are stored as
+**raw TEXT**: you cannot re-label data you never collected, whereas the heuristic
+can be recomputed at will.
 
-Le compositeur est interrogé par socket IPC Hyprland (pas `hyprctl`, qui forke)
-et au plus toutes les 5 secondes.
+The compositor is queried through the Hyprland IPC socket (not `hyprctl`, which
+forks) and at most every 5 seconds.
 
-## 🧪 Protocoles expérimentaux
+## 🧪 Experimental protocols
 
-### Identifier les 6 sondes `gigabyte_wmi`
+### Identifying the 6 `gigabyte_wmi` probes
 
-Le driver ne les labellise pas. Elles restent donc nommées par index, et le
-mapping se détermine à l'expérience — le renommage se fera après coup par
-`ALTER TABLE RENAME COLUMN`, ce n'est pas une raison pour deviner maintenant.
+The driver does not label them. They therefore stay named by index, and the
+mapping is determined experimentally — the rename will happen afterwards through
+`ALTER TABLE RENAME COLUMN`, which is no reason to guess now.
 
-1. `stress-ng --cpu $(nproc) --timeout 5m` → la sonde qui monte le plus vite et
-   redescend le plus vite est côté VRM ;
-2. charge GPU seule → la sonde qui suit est côté PCIe/chipset ;
-3. machine au repos, fenêtre ouverte → la sonde qui suit l'ambiante.
+1. `stress-ng --cpu $(nproc) --timeout 5m` → the probe that rises fastest and
+   falls fastest is on the VRM side;
+2. GPU load alone → the probe that follows is on the PCIe/chipset side;
+3. machine idle, window open → the probe that follows ambient temperature.
 
-> 📝 À consigner ici quand ce sera fait.
+> 📝 To be recorded here once it is done.
 
-### Familles d'anomalies visées
+### Targeted anomaly families
 
-| Label             | Provocation                                          |
+| Label             | How it is provoked                                   |
 |-------------------|------------------------------------------------------|
-| `fan_curve_low`   | courbe de ventilation abaissée dans le BIOS          |
-| `airflow_blocked` | grille d'entrée d'air obstruée                       |
-| `oc_unstable`     | OC/undervolt hors marge → WHEA dans `events`         |
-| `stress_ng`       | charge synthétique de référence                      |
-| `gaming`          | charge réelle                                        |
-| `normal`          | tout le reste                                        |
+| `fan_curve_low`   | fan curve lowered in the BIOS                        |
+| `airflow_blocked` | air intake grille obstructed                         |
+| `oc_unstable`     | OC/undervolt out of margin → WHEA in `events`        |
+| `stress_ng`       | synthetic reference load                             |
+| `gaming`          | real load                                            |
+| `normal`          | everything else                                      |
 
 ## 🚨 Détection d'erreurs
 
