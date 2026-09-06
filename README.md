@@ -258,97 +258,94 @@ mapping is determined experimentally — the rename will happen afterwards throu
 | `gaming`          | real load                                            |
 | `normal`          | everything else                                      |
 
-## 🚨 Détection d'erreurs
+## 🚨 Error detection
 
-C'est la table `events` : un événement ponctuel — une MCE dure une microseconde —
-ne peut pas exister dans une série échantillonnée à 1 Hz. Il lui faut un canal
-à part.
+This is the `events` table: a point-in-time event — an MCE lasts a microsecond —
+cannot exist in a series sampled at 1 Hz. It needs a channel of its own.
 
-« Toutes les erreurs possibles » n'existe pas comme liste finie : un pilote peut
-inventer demain un message qu'aucun motif ne connaît. La couverture repose donc
-sur **trois étages** dont chacun rattrape les angles morts des autres.
+"Every possible error" does not exist as a finite list: a driver may invent a
+message tomorrow that no pattern knows about. Coverage therefore rests on **three
+stages**, each catching the others' blind spots.
 
-### Étage 1 — Classement des messages noyau
+### Stage 1 — Classifying kernel messages
 
-38 règles dans `collector/errors.py`, rangées en six familles : CPU/mémoire
-(MCE, APEI/GHES, ECC, microcode), stabilité (panic, oops, lockups, RCU stall,
-GPF), mémoire (OOM), GPU (Xid NVIDIA avec traduction du code, reset et fautes
-AMD, ECC vidéo), stockage (NVMe, ATA, bloc, corruption de FS) et bus
-(PCIe AER, lien, USB, seuil thermique, alimentation, ACPI, firmware, veille).
+38 rules in `collector/errors.py`, arranged into six families: CPU/memory (MCE,
+APEI/GHES, ECC, microcode), stability (panic, oops, lockups, RCU stall, GPF),
+memory (OOM), GPU (NVIDIA Xid with code translation, AMD resets and faults, video
+ECC), storage (NVMe, ATA, block, FS corruption) and bus (PCIe AER, link, USB,
+thermal threshold, power, ACPI, firmware, suspend).
 
-Le fichier est **des données, pas du code** : un motif, un genre, une gravité et
-une phrase d'explication. Ajouter une règle ne demande pas de toucher au moteur.
+The file is **data, not code**: a pattern, a kind, a severity and a sentence of
+explanation. Adding a rule does not require touching the engine.
 
-Deux sources, choisies au démarrage :
+Two sources, chosen at startup:
 
-| Source            | Quand                        | Clé de déduplication  |
-|-------------------|------------------------------|-----------------------|
-| `/dev/kmsg`       | root (défaut sous systemd)   | numéro de séquence    |
-| `journalctl -k -f`| sans privilèges, si systemd  | curseur journald      |
+| Source            | When                          | Deduplication key      |
+|-------------------|-------------------------------|------------------------|
+| `/dev/kmsg`       | root (default under systemd)  | sequence number        |
+| `journalctl -k -f`| without privileges, if systemd| journald cursor        |
 
-Aucune des deux ne forke par tick : `/dev/kmsg` est un descripteur ouvert une
-fois, `journalctl` un seul process pour toute la vie du daemon.
+Neither forks per tick: `/dev/kmsg` is a descriptor opened once, `journalctl` a
+single process for the daemon's whole life.
 
-> 🔁 **Le démarrage rejoue tout le tampon du boot courant.** Les erreurs
-> survenues avant le lancement du collector — au boot, ou pendant que le service
-> était arrêté — sont récupérées avec leur date d'origine. La clé de
-> déduplication rend ce rejeu idempotent : redémarrer trois fois n'enregistre pas
-> trois fois la même MCE.
+> 🔁 **Startup replays the entire buffer of the current boot.** Errors that
+> occurred before the collector was launched — at boot, or while the service was
+> stopped — are recovered with their original timestamp. The deduplication key
+> makes this replay idempotent: restarting three times does not record the same
+> MCE three times.
 
-### Étage 2 — L'attrape-tout
+### Stage 2 — The catch-all
 
-Tout enregistrement que le noyau marque lui-même en priorité ≤ 3 (err, crit,
-alert, emerg) et qu'aucune règle ne reconnaît est enregistré en `kernel_error`
-avec son texte brut. C'est ce qui évite de ne détecter que les pannes qu'on
-avait déjà imaginées.
+Any record the kernel itself marks at priority ≤ 3 (err, crit, alert, emerg) and
+that no rule recognises is recorded as `kernel_error` with its raw text. That is
+what avoids only detecting the failures you had already imagined.
 
-Contrepartie : le noyau émet en priorité « erreur » des messages qui décrivent
-un état normal (`TDX not supported`, `RAS: Correctable Errors collector
-initialized`…). Une liste `BENIGN` explicite les écarte — sans elle, chaque boot
-rajouterait les mêmes non-événements, et une constante présente dans 100 % des
-lignes n'apprend rien à un modèle. Elle se complète machine par machine, et
-`--scan` sert exactement à ça.
+The trade-off: the kernel emits at "error" priority messages that describe a
+normal state (`TDX not supported`, `RAS: Correctable Errors collector
+initialized`…). An explicit `BENIGN` list filters them out — without it, every
+boot would add the same non-events, and a constant present in 100 % of the rows
+teaches a model nothing. It is completed machine by machine, and `--scan` exists
+precisely for that.
 
-### Étage 3 — Les compteurs matériels
+### Stage 3 — Hardware counters
 
-Indépendants du texte, et c'est ce qui fait leur valeur :
+Independent of the text, and that is what makes them valuable:
 
-- ils fonctionnent **sans privilèges**, là où `/dev/kmsg` exige root ;
-- ils attrapent ce que le noyau compte **sans forcément le journaliser** — une
-  erreur PCIe corrigée n'écrit rien dans `dmesg` si le rate-limit a frappé, mais
-  le compteur, lui, avance.
+- they work **without privileges**, where `/dev/kmsg` requires root;
+- they catch what the kernel counts **without necessarily logging it** — a
+  corrected PCIe error writes nothing to `dmesg` if the rate limit kicked in, but
+  the counter still moves.
 
-| Colonne                                  | Source                    | Ce que ça détecte                          |
-|------------------------------------------|---------------------------|--------------------------------------------|
-| `err_mce`                                | `/proc/interrupts` MCE    | Machine Check comptée par le CPU           |
-| `err_thermal_irq`                        | `/proc/interrupts` TRM    | seuil thermique franchi ← ventirad encrassé |
-| `err_threshold_irq`, `err_deferred_irq`  | THR, DFR                  | seuils et erreurs différées AMD            |
-| `err_nmi`                                | NMI                       | alimentation, RAM, watchdog                |
-| `err_oom_kill`                           | `/proc/vmstat`            | process tués faute de mémoire              |
-| `err_ecc_ce`, `err_ecc_ue`               | EDAC                      | erreurs mémoire corrigées / non corrigées  |
-| `err_aer_corr/nonfatal/fatal`            | PCIe AER                  | qualité du lien PCIe                        |
-| `err_cpu_throttle`, `err_pkg_throttle`   | `thermal_throttle`        | bridages thermiques (Intel)                |
-| `err_gpu_ras`                            | RAS amdgpu                | ECC mémoire vidéo                          |
-| `err_disk_io`                            | `ioerr_cnt`               | erreurs d'I/O SCSI                         |
-| `err_nvme_state`                         | `/sys/class/nvme/*/state` | contrôleur hors de l'état `live`           |
+| Column                                   | Source                    | What it detects                             |
+|------------------------------------------|---------------------------|---------------------------------------------|
+| `err_mce`                                | `/proc/interrupts` MCE    | Machine Check counted by the CPU            |
+| `err_thermal_irq`                        | `/proc/interrupts` TRM    | thermal threshold crossed ← clogged heatsink |
+| `err_threshold_irq`, `err_deferred_irq`  | THR, DFR                  | AMD thresholds and deferred errors          |
+| `err_nmi`                                | NMI                       | power supply, RAM, watchdog                 |
+| `err_oom_kill`                           | `/proc/vmstat`            | processes killed for lack of memory         |
+| `err_ecc_ce`, `err_ecc_ue`               | EDAC                      | corrected / uncorrected memory errors       |
+| `err_aer_corr/nonfatal/fatal`            | PCIe AER                  | PCIe link quality                            |
+| `err_cpu_throttle`, `err_pkg_throttle`   | `thermal_throttle`        | thermal throttling (Intel)                  |
+| `err_gpu_ras`                            | amdgpu RAS               | video memory ECC                            |
+| `err_disk_io`                            | `ioerr_cnt`               | SCSI I/O errors                             |
+| `err_nvme_state`                         | `/sys/class/nvme/*/state` | controller out of the `live` state          |
 
-Chaque compteur est **à la fois un événement et une feature** : son delta par
-tick devient une colonne de `samples`, et tout mouvement écrit une ligne dans
-`events`. Une valeur non nulle **au démarrage** est signalée aussi : une machine
-qui compte déjà 4 000 erreurs ECC corrigées depuis le boot doit le dire au
-premier tick, pas attendre la 4 001e.
+Each counter is **both an event and a feature**: its delta per tick becomes a
+column of `samples`, and any movement writes a row into `events`. A non-zero value
+**at startup** is reported too: a machine already counting 4,000 corrected ECC
+errors since boot should say so at the first tick, not wait for the 4,001st.
 
-### Couverture, machine par machine
+### Coverage, machine by machine
 
-Elle n'est pas la même partout, et `--doctor` le dit — y compris ce qui n'est
-**pas** surveillé, ce qui vaut autant que le reste : sans contrôleur EDAC, une
-erreur mémoire corrigée ne laisse de trace nulle part.
+It is not the same everywhere, and `--doctor` says so — including what is **not**
+monitored, which matters as much as the rest: without an EDAC controller, a
+corrected memory error leaves no trace anywhere.
 
-Relevé sur le portable (Ryzen 5 3500U, sans root) : 9 compteurs actifs ;
-`err_ecc_*` absents (mémoire sans ECC), `err_cpu_throttle` absent (compteur
-Intel), `err_gpu_ras` absent (iGPU), `err_disk_io` absent (NVMe, pas SCSI).
-Sur le desktop, attends-toi à voir apparaître les compteurs RAS du GPU et,
-selon la carte mère, EDAC.
+Measured on the laptop (Ryzen 5 3500U, without root): 9 active counters;
+`err_ecc_*` absent (non-ECC memory), `err_cpu_throttle` absent (Intel counter),
+`err_gpu_ras` absent (iGPU), `err_disk_io` absent (NVMe, not SCSI).
+On the desktop, expect the GPU RAS counters to appear and, depending on the
+motherboard, EDAC.
 
 ## ⚠️ Limites connues
 
