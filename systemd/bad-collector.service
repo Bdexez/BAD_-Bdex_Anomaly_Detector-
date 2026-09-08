@@ -1,0 +1,31 @@
+# Installation :
+#   sudo cp systemd/bad-collector.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now bad-collector
+#
+# Root est requis pour un seul capteur : RAPL (energy_uj en 0400 depuis
+# Platypus). Tout le reste tourne en utilisateur ordinaire — si la puissance
+# CPU ne t'intéresse pas, lance le collector sans systemd et sans root.
+
+[Unit]
+Description=BAD — collecte de télémétrie matérielle à 1 Hz
+After=multi-user.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/bad
+ExecStart=/usr/bin/python3 -m collector.main --db /var/lib/bad/metrics.db --period 1.0
+Restart=always
+RestartSec=5
+
+# Le daemon lit /proc, /sys et écrit un seul fichier. Rien d'autre.
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/lib/bad
+PrivateTmp=yes
+NoNewPrivileges=yes
+# Priorité basse : mesurer la machine ne doit pas perturber ce qu'on mesure.
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
