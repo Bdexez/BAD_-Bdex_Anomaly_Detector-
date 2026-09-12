@@ -2,95 +2,96 @@
 
 # 🩺 BAD — Bdex Anomaly Detector
 
-**Télémétrie matérielle à 1 Hz sur Linux, pour construire un dataset labellisé
-et y entraîner un détecteur d'anomalies.**
+**Hardware telemetry at 1 Hz on Linux, to build a labelled dataset and train an
+anomaly detector on it.**
 
 <br>
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black)
 ![Storage](https://img.shields.io/badge/storage-SQLite%20(WAL)-003B57?logo=sqlite&logoColor=white)
-![Dependencies](https://img.shields.io/badge/dépendances-0%20obligatoire-success)
+![Dependencies](https://img.shields.io/badge/dependencies-0%20required-success)
 
 </div>
 
 ---
 
-Cibles visées : ventirad encrassé, courbe de ventilation trop basse, flux d'air
-obstrué, OC instable.
+Targets: clogged heatsink, fan curve set too low, blocked airflow, unstable
+overclock.
 
-Ce dépôt contient l'**étage de collecte**. Sans données propres et
-contextualisées, l'étage modèle n'a rien à apprendre — c'est donc celui-là qu'on
-soigne en premier.
+This repository contains the **collection stage**. Without clean, contextualised
+data, the model stage has nothing to learn from — so that is the one we take care
+of first.
 
 <details>
-<summary><b>📑 Sommaire</b></summary>
+<summary><b>📑 Contents</b></summary>
 
-- [Principe](#principe)
-- [Démarrage rapide](#-démarrage-rapide)
-  - [Annoter les expériences](#annoter-les-expériences)
+- [Principle](#principle)
+- [Quick start](#-quick-start)
+  - [Annotating experiments](#annotating-experiments)
   - [Tests](#tests)
-- [Organisation](#-organisation)
-- [Modèle de données](#-modèle-de-données)
-- [Ce que chaque reader collecte](#-ce-que-chaque-reader-collecte)
-- [Le contexte](#-le-contexte-ou-pourquoi-ce-nest-pas-un-notebook-kaggle)
-- [Protocoles expérimentaux](#-protocoles-expérimentaux)
-- [Détection d'erreurs](#-détection-derreurs)
-- [Limites connues](#-limites-connues)
-- [Dépendances](#-dépendances)
+- [Layout](#-layout)
+- [Data model](#-data-model)
+- [What each reader collects](#-what-each-reader-collects)
+- [Context](#-context-or-why-this-is-not-a-kaggle-notebook)
+- [Experimental protocols](#-experimental-protocols)
+- [Error detection](#-error-detection)
+- [Known limitations](#-known-limitations)
+- [Dependencies](#-dependencies)
 
 </details>
 
-## Principe
+## Principle
 
-Un *reader* = une source de métriques. Il déclare ses colonnes, se configure au
-démarrage, renvoie un dict par tick, et **ne lève jamais d'exception dans
-`read()`**. Le collector doit survivre à la perte d'un capteur.
+A *reader* = one source of metrics. It declares its columns, configures itself at
+startup, returns one dict per tick, and **never raises inside `read()`**. The
+collector has to survive losing a sensor.
 
-Trois règles structurent tout le reste :
+Three rules structure everything else:
 
-> **1. Rien n'est codé en dur.**
-> Les chemins hwmon sont résolus par le contenu du fichier `name`, jamais par le
-> numéro (`hwmon2` est `k10temp` aujourd'hui et `hwmon4` après le prochain
-> reboot). Le nombre de threads CPU, les zones RAPL et les sondes de température
-> sont découverts au démarrage.
+> **1. Nothing is hard-coded.**
+> hwmon paths are resolved by the contents of the `name` file, never by number
+> (`hwmon2` is `k10temp` today and `hwmon4` after the next reboot). The number of
+> CPU threads, the RAPL zones and the temperature probes are discovered at
+> startup.
 
-> **2. Une source absente se désactive, elle ne remplit pas la base de NULL.**
-> `setup()` renvoie `False` et le reader disparaît du schéma. Le même dépôt
-> tourne sur un desktop 7600X + RTX 3060 Ti et sur un portable Ryzen à iGPU.
+> **2. A missing source disables itself, it does not fill the database with NULLs.**
+> `setup()` returns `False` and the reader disappears from the schema. The same
+> repository runs on a 7600X + RTX 3060 Ti desktop and on a Ryzen laptop with an
+> iGPU.
 
-> **3. On ne devine jamais un label.**
-> Quand l'information manque, la colonne vaut `NULL`, pas `0` — un faux label
-> pollue tout le dataset en aval.
+> **3. A label is never guessed.**
+> When the information is missing, the column is `NULL`, not `0` — one wrong
+> label pollutes the whole downstream dataset.
 
-## 🚀 Démarrage rapide
+## 🚀 Quick start
 
 ```bash
-# Ce que CETTE machine permet de mesurer et de détecter (à lancer sur chacune).
+# What THIS machine makes it possible to measure and detect (run it on each one).
 python -m collector.main --doctor
 
-# Classe toutes les erreurs du boot courant, sans rien écrire en base.
+# Classify every error of the current boot, without writing anything to the database.
 python -m collector.main --scan
 
-# Collecte (sans root : tout sauf RAPL).
+# Collection (without root: everything except RAPL).
 python -m collector.main --db data/metrics.db --period 1.0
 
-# Avec RAPL (energy_uj est en 0400).
+# With RAPL (energy_uj is 0400).
 sudo python -m collector.main --db data/metrics.db --period 1.0
 
-# Essai court.
-python -m collector.main --db /tmp/essai.db --period 0.5 --duration 30 -v
+# Short run.
+python -m collector.main --db /tmp/trial.db --period 0.5 --duration 30 -v
 ```
 
-> 🛠️ **En service** : voir [`systemd/bad-collector.service`](systemd/bad-collector.service).
+> 🛠️ **As a service**: see [`systemd/bad-collector.service`](systemd/bad-collector.service).
 
-### Annoter les expériences
+### Annotating experiments
 
-C'est la valeur ajoutée du projet : la vérité terrain qu'aucun capteur ne donne.
+This is the project's added value: the ground truth no sensor gives you.
 
 ```bash
-python -m collector.label start airflow_blocked -n "grille avant obstruée"
-# ... l'expérience tourne ...
+python -m collector.label start airflow_blocked -n "front intake blocked"
+# ... the experiment runs ...
 python -m collector.label end
 python -m collector.label list
 ```
@@ -101,293 +102,286 @@ python -m collector.label list
 python -m unittest discover -s tests -t .
 ```
 
-Les tests montent de faux `/sys` et `/proc` : on vérifie le wrap RAPL sans
-attendre 4 secondes de charge, et la découverte `gigabyte_wmi` sans carte
-Gigabyte.
+The tests mount fake `/sys` and `/proc` trees: we check the RAPL wrap without
+waiting 4 seconds of load, and the `gigabyte_wmi` discovery without a Gigabyte
+board.
 
-## 🗂️ Organisation
+## 🗂️ Layout
 
 ```
 collector/
-├─ main.py            boucle à cadence fixe, cycle de vie des readers
-├─ storage.py         SQLite (schéma évolutif, batch, events dédupliqués, labels)
-├─ registry.py        résolution sysfs (hwmon par nom, lectures tolérantes)
-├─ errors.py          CATALOGUE des erreurs détectables (données, pas code)
-├─ label.py           CLI d'annotation des expériences
+├─ main.py            fixed-rate loop, reader lifecycle
+├─ storage.py         SQLite (evolving schema, batching, deduplicated events, labels)
+├─ registry.py        sysfs resolution (hwmon by name, tolerant reads)
+├─ errors.py          CATALOGUE of detectable errors (data, not code)
+├─ label.py           experiment annotation CLI
 └─ readers/
-   ├─ base.py         contrat Reader + ReaderState (pannes, canal d'événements)
-   ├─ kmsg.py         erreurs noyau (/dev/kmsg ou journalctl)
-   ├─ errcounters.py  compteurs d'erreurs matérielles (sans root)
-   ├─ hwmon.py        socle de découverte hwmon partagé
-   ├─ k10temp.py      températures CPU AMD
-   ├─ gigabyte_wmi.py 6 sondes carte mère Gigabyte
-   ├─ amdgpu.py       GPU/iGPU AMD
-   ├─ nvme.py         températures SSD
-   ├─ nvml.py         GPU NVIDIA (NVML, pas nvidia-smi)
-   ├─ rapl.py         puissance CPU dérivée des compteurs d'énergie
+   ├─ base.py         Reader contract + ReaderState (failures, event channel)
+   ├─ kmsg.py         kernel errors (/dev/kmsg or journalctl)
+   ├─ errcounters.py  hardware error counters (no root needed)
+   ├─ hwmon.py        shared hwmon discovery base
+   ├─ k10temp.py      AMD CPU temperatures
+   ├─ gigabyte_wmi.py 6 Gigabyte motherboard probes
+   ├─ amdgpu.py       AMD GPU/iGPU
+   ├─ nvme.py         SSD temperatures
+   ├─ nvml.py         NVIDIA GPU (NVML, not nvidia-smi)
+   ├─ rapl.py         CPU power derived from energy counters
    ├─ psi.py          Pressure Stall Information
-   ├─ proc.py         CPU/mémoire/fréquence depuis /proc
-   └─ context.py      ce que la machine était en train de faire
-schema.sql            squelette invariant de la base
+   ├─ proc.py         CPU/memory/frequency from /proc
+   └─ context.py      what the machine was doing
+schema.sql            invariant skeleton of the database
 ```
 
-## 🗃️ Modèle de données
+## 🗃️ Data model
 
-Format **wide** : ~50 colonnes `REAL`, une ligne par seconde. 14 jours à 1 Hz
-font ~1,2 M lignes ; en narrow (`ts, metric, value`) ce serait 60 M pour la même
-information. Les colonnes sont ajoutées dynamiquement (`ALTER TABLE ADD COLUMN`
-est O(1) en SQLite), donc ajouter un reader ne casse pas une base existante :
-les anciennes lignes portent simplement `NULL`.
+**Wide** format: ~50 `REAL` columns, one row per second. 14 days at 1 Hz is
+~1.2 M rows; in narrow form (`ts, metric, value`) that would be 60 M for the same
+information. Columns are added dynamically (`ALTER TABLE ADD COLUMN` is O(1) in
+SQLite), so adding a reader does not break an existing database: older rows
+simply carry `NULL`.
 
-| Table       | Rôle                                                                     |
-|-------------|--------------------------------------------------------------------------|
-| `samples`   | les séries, une ligne par tick, indexées par `(boot_id, ts)`             |
-| `boots`     | un boot = un contexte (chemins renumérotés, compteurs RAPL remis à zéro) |
-| `events`    | événements discrets : WHEA, MCE, OOM, reset GPU, panne de reader         |
-| `labels`    | fenêtres d'expériences annotées à la main                                |
+| Table       | Role                                                                      |
+|-------------|---------------------------------------------------------------------------|
+| `samples`   | the series, one row per tick, indexed by `(boot_id, ts)`                  |
+| `boots`     | a boot = a context (renumbered paths, RAPL counters reset)                |
+| `events`    | discrete events: WHEA, MCE, OOM, GPU reset, reader failure                |
+| `labels`    | hand-annotated experiment windows                                         |
 
-> 💡 **SQLite et pas PostgreSQL** — un seul writer, local, pas de réseau, pas de
-> concurrence. En WAL, SQLite encaisse 1 Hz sans transpirer et le fichier unique
-> se copie et se versionne trivialement. Postgres ici serait de la complexité
-> gratuite.
+> 💡 **SQLite and not PostgreSQL** — a single writer, local, no network, no
+> concurrency. In WAL mode, SQLite handles 1 Hz without breaking a sweat and the
+> single file is trivially copied and versioned. Postgres here would be
+> gratuitous complexity.
 
-## 📊 Ce que chaque reader collecte
+## 📊 What each reader collects
 
-| Reader          | Colonnes                                                           | Notes                                                    |
-|-----------------|-------------------------------------------------------------------|----------------------------------------------------------|
-| `kmsg`          | `kmsg_errors`, `kmsg_criticals`, `kmsg_messages`                  | erreurs noyau classées, écrites dans `events`            |
-| `errcounters`   | `err_mce`, `err_thermal_irq`, `err_aer_*`, `err_ecc_*`…           | compteurs matériels, sans privilèges                     |
-| `k10temp`       | `k10temp_tctl`, `k10temp_tccd1`…                                  | nommées d'après `tempN_label`, pas d'après `N`           |
-| `gigabyte_wmi`  | `gigabyte_temp1..6`                                               | sondes non labellisées, cf. protocole ci-dessous         |
-| `rapl`          | `rapl_pkg_watts`, `rapl_core_watts`                              | puissance dérivée, root requis                           |
-| `nvml`          | `gpu_temp`, `gpu_power_w`, `gpu_throttle_mask`…                   | GPU NVIDIA                                                |
-| `amdgpu`        | `amdgpu_edge`, `amdgpu_sclk_mhz`, `amdgpu_busy_pct`…             | GPU/iGPU AMD                                              |
-| `nvme`          | `nvme_composite`…                                                 | un reader par disque                                     |
-| `psi`           | `psi_cpu_some`, `psi_io_full`…                                    | contention, pas utilisation                              |
-| `proc`          | `cpu_util`, `cpuN_util`, `load1`, `mem_used_mb`, `cpu_freq_avg`   | dérivées de jiffies                                      |
-| `context`       | `uptime_s`, `top_proc_cpu`, `is_gaming`, `active_window`…         | le contexte d'usage                                      |
+| Reader          | Columns                                                            | Notes                                                    |
+|-----------------|--------------------------------------------------------------------|----------------------------------------------------------|
+| `kmsg`          | `kmsg_errors`, `kmsg_criticals`, `kmsg_messages`                  | classified kernel errors, written to `events`            |
+| `errcounters`   | `err_mce`, `err_thermal_irq`, `err_aer_*`, `err_ecc_*`…           | hardware counters, no privileges needed                  |
+| `k10temp`       | `k10temp_tctl`, `k10temp_tccd1`…                                  | named after `tempN_label`, not after `N`                 |
+| `gigabyte_wmi`  | `gigabyte_temp1..6`                                               | unlabelled probes, see the protocol below                |
+| `rapl`          | `rapl_pkg_watts`, `rapl_core_watts`                               | derived power, root required                             |
+| `nvml`          | `gpu_temp`, `gpu_power_w`, `gpu_throttle_mask`…                   | NVIDIA GPU                                                |
+| `amdgpu`        | `amdgpu_edge`, `amdgpu_sclk_mhz`, `amdgpu_busy_pct`…              | AMD GPU/iGPU                                              |
+| `nvme`          | `nvme_composite`…                                                 | one reader per disk                                      |
+| `psi`           | `psi_cpu_some`, `psi_io_full`…                                    | contention, not utilisation                              |
+| `proc`          | `cpu_util`, `cpuN_util`, `load1`, `mem_used_mb`, `cpu_freq_avg`   | derived from jiffies                                     |
+| `context`       | `uptime_s`, `top_proc_cpu`, `is_gaming`, `active_window`…         | usage context                                            |
 
-Trois d'entre eux méritent un mot.
+Three of them deserve a word.
 
 <details>
-<summary><b>⚡ RAPL — un compteur d'énergie, pas un capteur de puissance</b></summary>
+<summary><b>⚡ RAPL — an energy counter, not a power sensor</b></summary>
 
 <br>
 
-**RAPL** n'est pas un capteur de puissance mais un compteur d'énergie cumulée en
-µJ. On dérive `P = ΔE / Δt`, et le compteur **reboucle** à
-`max_energy_range_uj` (~262 J, soit ~4 s à 65 W : ça arrive en permanence). Sans
-traitement du wrap, on obtient des puissances négatives toutes les quelques
-secondes — et le détecteur d'anomalies passe sa vie à détecter ce bug-là. Le cas
-symétrique (compteur remis à zéro au réveil de veille, alors que
-`CLOCK_MONOTONIC` n'a pas avancé) donne un pic aberrant : il est borné et
-remplacé par `NULL`. Un trou dans les données vaut mieux qu'un pic inventé.
+**RAPL** is not a power sensor but a cumulative energy counter in µJ. We derive
+`P = ΔE / Δt`, and the counter **wraps** at `max_energy_range_uj` (~262 J, i.e.
+~4 s at 65 W: it happens constantly). Without handling the wrap, you get negative
+power readings every few seconds — and the anomaly detector spends its life
+detecting that bug. The symmetric case (counter reset when waking from sleep,
+while `CLOCK_MONOTONIC` has not advanced) produces an absurd spike: it is bounded
+and replaced by `NULL`. A hole in the data beats an invented spike.
 
 </details>
 
 <details>
-<summary><b>📉 PSI — la contention, pas l'utilisation</b></summary>
+<summary><b>📉 PSI — contention, not utilisation</b></summary>
 
 <br>
 
-**PSI** mesure la **contention**, pas l'utilisation. Un CPU à 100 % peut avoir un
-PSI nul (personne n'attend) ; un CPU à 40 % avec un PSI à 30 signifie que des
-tâches sont bloquées. C'est exactement le signal qui apparaît quand un système
-dérive alors que les métriques classiques restent vertes.
+**PSI** measures **contention**, not utilisation. A CPU at 100 % can have zero
+PSI (nobody is waiting); a CPU at 40 % with a PSI of 30 means tasks are blocked.
+That is exactly the signal that appears when a system drifts while the classic
+metrics stay green.
 
 </details>
 
 <details>
-<summary><b>🎮 NVML plutôt que <code>nvidia-smi</code></b></summary>
+<summary><b>🎮 NVML rather than <code>nvidia-smi</code></b></summary>
 
 <br>
 
-`nvidia-smi` forke un process et met ~200 ms. À 1 Hz, on passerait 20 % du CPU à
-mesurer le CPU. NVML est un appel de bibliothèque, ~50 µs. `gpu_throttle_mask` y
-est la métrique la plus précieuse : le hardware dit lui-même *pourquoi* il se
-limite (thermique, power cap, voltage reliability). C'est un label gratuit,
-stocké en bitmask brut et décomposé plus tard au feature engineering.
+`nvidia-smi` forks a process and takes ~200 ms. At 1 Hz, we would spend 20 % of
+the CPU measuring the CPU. NVML is a library call, ~50 µs. `gpu_throttle_mask` is
+the most valuable metric there: the hardware itself says *why* it is limiting
+itself (thermal, power cap, voltage reliability). That is a free label, stored as
+a raw bitmask and decomposed later at feature engineering time.
 
 </details>
 
-## 🧭 Le contexte, ou pourquoi ce n'est pas un notebook Kaggle
+## 🧭 Context, or why this is not a Kaggle notebook
 
-Sans contexte, le modèle apprend « GPU chaud = anomalie » et alerte dès qu'on
-lance un jeu. Avec contexte, il apprend « GPU chaud **alors que rien ne tourne**
-= anomalie ».
+Without context, the model learns "hot GPU = anomaly" and alerts as soon as you
+start a game. With context, it learns "hot GPU **while nothing is running** =
+anomaly".
 
-`is_gaming` est une décision de design, pas une évidence. Elle est ici
-**tri-valuée** :
+`is_gaming` is a design decision, not an obvious one. It is **three-valued** here:
 
-| Valeur  | Signification                                                                    |
-|:-------:|---------------------------------------------------------------------------------|
-| `1`     | la fenêtre active porte un indice connu (`steam_app`, `gamescope`, `lutris`, `wine`…) |
-| `0`     | la fenêtre active est connue et ne correspond à aucun indice                      |
-| `NULL`  | aucune information (daemon lancé hors session graphique, compositeur injoignable) |
+| Value   | Meaning                                                                          |
+|:-------:|----------------------------------------------------------------------------------|
+| `1`     | the active window carries a known hint (`steam_app`, `gamescope`, `lutris`, `wine`…) |
+| `0`     | the active window is known and matches no hint                                    |
+| `NULL`  | no information (daemon started outside a graphical session, compositor unreachable) |
 
-Écrire `0` dans le dernier cas reviendrait à affirmer « pas de jeu » alors qu'on
-ne sait rien. Pour la même raison, `active_window` et `top_proc_name` sont
-stockés **en TEXT brut** : on ne peut pas ré-étiqueter des données qu'on n'a pas
-collectées, alors que l'heuristique, elle, se recalcule à volonté.
+Writing `0` in the last case would amount to asserting "no game" when we know
+nothing. For the same reason, `active_window` and `top_proc_name` are stored as
+**raw TEXT**: you cannot re-label data you never collected, whereas the heuristic
+can be recomputed at will.
 
-Le compositeur est interrogé par socket IPC Hyprland (pas `hyprctl`, qui forke)
-et au plus toutes les 5 secondes.
+The compositor is queried through the Hyprland IPC socket (not `hyprctl`, which
+forks) and at most every 5 seconds.
 
-## 🧪 Protocoles expérimentaux
+## 🧪 Experimental protocols
 
-### Identifier les 6 sondes `gigabyte_wmi`
+### Identifying the 6 `gigabyte_wmi` probes
 
-Le driver ne les labellise pas. Elles restent donc nommées par index, et le
-mapping se détermine à l'expérience — le renommage se fera après coup par
-`ALTER TABLE RENAME COLUMN`, ce n'est pas une raison pour deviner maintenant.
+The driver does not label them. They therefore stay named by index, and the
+mapping is determined experimentally — the rename will happen afterwards through
+`ALTER TABLE RENAME COLUMN`, which is no reason to guess now.
 
-1. `stress-ng --cpu $(nproc) --timeout 5m` → la sonde qui monte le plus vite et
-   redescend le plus vite est côté VRM ;
-2. charge GPU seule → la sonde qui suit est côté PCIe/chipset ;
-3. machine au repos, fenêtre ouverte → la sonde qui suit l'ambiante.
+1. `stress-ng --cpu $(nproc) --timeout 5m` → the probe that rises fastest and
+   falls fastest is on the VRM side;
+2. GPU load alone → the probe that follows is on the PCIe/chipset side;
+3. machine idle, window open → the probe that follows ambient temperature.
 
-> 📝 À consigner ici quand ce sera fait.
+> 📝 To be recorded here once it is done.
 
-### Familles d'anomalies visées
+### Targeted anomaly families
 
-| Label             | Provocation                                          |
+| Label             | How it is provoked                                   |
 |-------------------|------------------------------------------------------|
-| `fan_curve_low`   | courbe de ventilation abaissée dans le BIOS          |
-| `airflow_blocked` | grille d'entrée d'air obstruée                       |
-| `oc_unstable`     | OC/undervolt hors marge → WHEA dans `events`         |
-| `stress_ng`       | charge synthétique de référence                      |
-| `gaming`          | charge réelle                                        |
-| `normal`          | tout le reste                                        |
+| `fan_curve_low`   | fan curve lowered in the BIOS                        |
+| `airflow_blocked` | air intake grille obstructed                         |
+| `oc_unstable`     | OC/undervolt out of margin → WHEA in `events`        |
+| `stress_ng`       | synthetic reference load                             |
+| `gaming`          | real load                                            |
+| `normal`          | everything else                                      |
 
-## 🚨 Détection d'erreurs
+## 🚨 Error detection
 
-C'est la table `events` : un événement ponctuel — une MCE dure une microseconde —
-ne peut pas exister dans une série échantillonnée à 1 Hz. Il lui faut un canal
-à part.
+This is the `events` table: a point-in-time event — an MCE lasts a microsecond —
+cannot exist in a series sampled at 1 Hz. It needs a channel of its own.
 
-« Toutes les erreurs possibles » n'existe pas comme liste finie : un pilote peut
-inventer demain un message qu'aucun motif ne connaît. La couverture repose donc
-sur **trois étages** dont chacun rattrape les angles morts des autres.
+"Every possible error" does not exist as a finite list: a driver may invent a
+message tomorrow that no pattern knows about. Coverage therefore rests on **three
+stages**, each catching the others' blind spots.
 
-### Étage 1 — Classement des messages noyau
+### Stage 1 — Classifying kernel messages
 
-38 règles dans `collector/errors.py`, rangées en six familles : CPU/mémoire
-(MCE, APEI/GHES, ECC, microcode), stabilité (panic, oops, lockups, RCU stall,
-GPF), mémoire (OOM), GPU (Xid NVIDIA avec traduction du code, reset et fautes
-AMD, ECC vidéo), stockage (NVMe, ATA, bloc, corruption de FS) et bus
-(PCIe AER, lien, USB, seuil thermique, alimentation, ACPI, firmware, veille).
+38 rules in `collector/errors.py`, arranged into six families: CPU/memory (MCE,
+APEI/GHES, ECC, microcode), stability (panic, oops, lockups, RCU stall, GPF),
+memory (OOM), GPU (NVIDIA Xid with code translation, AMD resets and faults, video
+ECC), storage (NVMe, ATA, block, FS corruption) and bus (PCIe AER, link, USB,
+thermal threshold, power, ACPI, firmware, suspend).
 
-Le fichier est **des données, pas du code** : un motif, un genre, une gravité et
-une phrase d'explication. Ajouter une règle ne demande pas de toucher au moteur.
+The file is **data, not code**: a pattern, a kind, a severity and a sentence of
+explanation. Adding a rule does not require touching the engine.
 
-Deux sources, choisies au démarrage :
+Two sources, chosen at startup:
 
-| Source            | Quand                        | Clé de déduplication  |
-|-------------------|------------------------------|-----------------------|
-| `/dev/kmsg`       | root (défaut sous systemd)   | numéro de séquence    |
-| `journalctl -k -f`| sans privilèges, si systemd  | curseur journald      |
+| Source            | When                          | Deduplication key      |
+|-------------------|-------------------------------|------------------------|
+| `/dev/kmsg`       | root (default under systemd)  | sequence number        |
+| `journalctl -k -f`| without privileges, if systemd| journald cursor        |
 
-Aucune des deux ne forke par tick : `/dev/kmsg` est un descripteur ouvert une
-fois, `journalctl` un seul process pour toute la vie du daemon.
+Neither forks per tick: `/dev/kmsg` is a descriptor opened once, `journalctl` a
+single process for the daemon's whole life.
 
-> 🔁 **Le démarrage rejoue tout le tampon du boot courant.** Les erreurs
-> survenues avant le lancement du collector — au boot, ou pendant que le service
-> était arrêté — sont récupérées avec leur date d'origine. La clé de
-> déduplication rend ce rejeu idempotent : redémarrer trois fois n'enregistre pas
-> trois fois la même MCE.
+> 🔁 **Startup replays the entire buffer of the current boot.** Errors that
+> occurred before the collector was launched — at boot, or while the service was
+> stopped — are recovered with their original timestamp. The deduplication key
+> makes this replay idempotent: restarting three times does not record the same
+> MCE three times.
 
-### Étage 2 — L'attrape-tout
+### Stage 2 — The catch-all
 
-Tout enregistrement que le noyau marque lui-même en priorité ≤ 3 (err, crit,
-alert, emerg) et qu'aucune règle ne reconnaît est enregistré en `kernel_error`
-avec son texte brut. C'est ce qui évite de ne détecter que les pannes qu'on
-avait déjà imaginées.
+Any record the kernel itself marks at priority ≤ 3 (err, crit, alert, emerg) and
+that no rule recognises is recorded as `kernel_error` with its raw text. That is
+what avoids only detecting the failures you had already imagined.
 
-Contrepartie : le noyau émet en priorité « erreur » des messages qui décrivent
-un état normal (`TDX not supported`, `RAS: Correctable Errors collector
-initialized`…). Une liste `BENIGN` explicite les écarte — sans elle, chaque boot
-rajouterait les mêmes non-événements, et une constante présente dans 100 % des
-lignes n'apprend rien à un modèle. Elle se complète machine par machine, et
-`--scan` sert exactement à ça.
+The trade-off: the kernel emits at "error" priority messages that describe a
+normal state (`TDX not supported`, `RAS: Correctable Errors collector
+initialized`…). An explicit `BENIGN` list filters them out — without it, every
+boot would add the same non-events, and a constant present in 100 % of the rows
+teaches a model nothing. It is completed machine by machine, and `--scan` exists
+precisely for that.
 
-### Étage 3 — Les compteurs matériels
+### Stage 3 — Hardware counters
 
-Indépendants du texte, et c'est ce qui fait leur valeur :
+Independent of the text, and that is what makes them valuable:
 
-- ils fonctionnent **sans privilèges**, là où `/dev/kmsg` exige root ;
-- ils attrapent ce que le noyau compte **sans forcément le journaliser** — une
-  erreur PCIe corrigée n'écrit rien dans `dmesg` si le rate-limit a frappé, mais
-  le compteur, lui, avance.
+- they work **without privileges**, where `/dev/kmsg` requires root;
+- they catch what the kernel counts **without necessarily logging it** — a
+  corrected PCIe error writes nothing to `dmesg` if the rate limit kicked in, but
+  the counter still moves.
 
-| Colonne                                  | Source                    | Ce que ça détecte                          |
-|------------------------------------------|---------------------------|--------------------------------------------|
-| `err_mce`                                | `/proc/interrupts` MCE    | Machine Check comptée par le CPU           |
-| `err_thermal_irq`                        | `/proc/interrupts` TRM    | seuil thermique franchi ← ventirad encrassé |
-| `err_threshold_irq`, `err_deferred_irq`  | THR, DFR                  | seuils et erreurs différées AMD            |
-| `err_nmi`                                | NMI                       | alimentation, RAM, watchdog                |
-| `err_oom_kill`                           | `/proc/vmstat`            | process tués faute de mémoire              |
-| `err_ecc_ce`, `err_ecc_ue`               | EDAC                      | erreurs mémoire corrigées / non corrigées  |
-| `err_aer_corr/nonfatal/fatal`            | PCIe AER                  | qualité du lien PCIe                        |
-| `err_cpu_throttle`, `err_pkg_throttle`   | `thermal_throttle`        | bridages thermiques (Intel)                |
-| `err_gpu_ras`                            | RAS amdgpu                | ECC mémoire vidéo                          |
-| `err_disk_io`                            | `ioerr_cnt`               | erreurs d'I/O SCSI                         |
-| `err_nvme_state`                         | `/sys/class/nvme/*/state` | contrôleur hors de l'état `live`           |
+| Column                                   | Source                    | What it detects                             |
+|------------------------------------------|---------------------------|---------------------------------------------|
+| `err_mce`                                | `/proc/interrupts` MCE    | Machine Check counted by the CPU            |
+| `err_thermal_irq`                        | `/proc/interrupts` TRM    | thermal threshold crossed ← clogged heatsink |
+| `err_threshold_irq`, `err_deferred_irq`  | THR, DFR                  | AMD thresholds and deferred errors          |
+| `err_nmi`                                | NMI                       | power supply, RAM, watchdog                 |
+| `err_oom_kill`                           | `/proc/vmstat`            | processes killed for lack of memory         |
+| `err_ecc_ce`, `err_ecc_ue`               | EDAC                      | corrected / uncorrected memory errors       |
+| `err_aer_corr/nonfatal/fatal`            | PCIe AER                  | PCIe link quality                            |
+| `err_cpu_throttle`, `err_pkg_throttle`   | `thermal_throttle`        | thermal throttling (Intel)                  |
+| `err_gpu_ras`                            | amdgpu RAS               | video memory ECC                            |
+| `err_disk_io`                            | `ioerr_cnt`               | SCSI I/O errors                             |
+| `err_nvme_state`                         | `/sys/class/nvme/*/state` | controller out of the `live` state          |
 
-Chaque compteur est **à la fois un événement et une feature** : son delta par
-tick devient une colonne de `samples`, et tout mouvement écrit une ligne dans
-`events`. Une valeur non nulle **au démarrage** est signalée aussi : une machine
-qui compte déjà 4 000 erreurs ECC corrigées depuis le boot doit le dire au
-premier tick, pas attendre la 4 001e.
+Each counter is **both an event and a feature**: its delta per tick becomes a
+column of `samples`, and any movement writes a row into `events`. A non-zero value
+**at startup** is reported too: a machine already counting 4,000 corrected ECC
+errors since boot should say so at the first tick, not wait for the 4,001st.
 
-### Couverture, machine par machine
+### Coverage, machine by machine
 
-Elle n'est pas la même partout, et `--doctor` le dit — y compris ce qui n'est
-**pas** surveillé, ce qui vaut autant que le reste : sans contrôleur EDAC, une
-erreur mémoire corrigée ne laisse de trace nulle part.
+It is not the same everywhere, and `--doctor` says so — including what is **not**
+monitored, which matters as much as the rest: without an EDAC controller, a
+corrected memory error leaves no trace anywhere.
 
-Relevé sur le portable (Ryzen 5 3500U, sans root) : 9 compteurs actifs ;
-`err_ecc_*` absents (mémoire sans ECC), `err_cpu_throttle` absent (compteur
-Intel), `err_gpu_ras` absent (iGPU), `err_disk_io` absent (NVMe, pas SCSI).
-Sur le desktop, attends-toi à voir apparaître les compteurs RAS du GPU et,
-selon la carte mère, EDAC.
+Measured on the laptop (Ryzen 5 3500U, without root): 9 active counters;
+`err_ecc_*` absent (non-ECC memory), `err_cpu_throttle` absent (Intel counter),
+`err_gpu_ras` absent (iGPU), `err_disk_io` absent (NVMe, not SCSI).
+On the desktop, expect the GPU RAS counters to appear and, depending on the
+motherboard, EDAC.
 
-## ⚠️ Limites connues
+## ⚠️ Known limitations
 
-Les dire vaut mieux que faire semblant.
+Saying them beats pretending.
 
-- **Fréquence CPU.** `cpuinfo_avg_freq` (amd-pstate, noyaux récents) est une
-  mesure ; `scaling_cur_freq`, utilisé en repli, n'est qu'une consigne du
-  gouverneur et ment franchement sur AMD P-State. La vraie fréquence effective
-  demanderait de lire les MSR APERF/MPERF — hors périmètre.
-- **PSI.** On stocke `avg10`, déjà lissé par le noyau. Le compteur `total`
-  (cumulé, en µs) serait dérivable et plus précis ; il reste récupérable plus
-  tard si l'horizon de 14 jours le demande.
-- **`top_proc_cpu`** est un pourcentage d'**un** cœur : 400 % est possible sur un
-  process multithread. Le scan de `/proc` coûte quelques millisecondes par tick
-  sur ~500 process.
-- **Timestamps en `epoch ms`, clé primaire.** Deux ticks dans la même
-  milliseconde se remplacent. À 1 Hz c'est théorique ; avec `--period 0.001` ça
-  ne le serait plus.
-- **`is_gaming`** repose sur une liste d'indices volontairement courte. Chaque
-  entrée est une hypothèse sur le dataset ; c'est pour ça que le brut est
-  conservé à côté.
-- **iGPU.** `amdgpu_busy_pct` d'une iGPU mesure une puce qui partage son budget
-  thermique et sa mémoire avec le CPU : les corrélations n'y ont pas le même
-  sens que sur une carte dédiée.
-- **Horodatage des erreurs kmsg.** Les enregistrements `/dev/kmsg` sont datés en
-  µs depuis le boot sur une horloge qui ne compte pas le temps suspendu : après
-  une veille, un événement d'avant peut être daté de quelques minutes en avance.
-  Le backend journald, lui, donne un horodatage absolu exact.
-- **Erreurs pendant que le collector est arrêté.** Le rejeu couvre le tampon du
-  **boot courant** uniquement. Une erreur survenue lors d'un boot précédent
-  n'est pas récupérée — `journalctl -k -b -1` reste à faire à la main.
-- **La liste `BENIGN` est empirique.** Elle a été construite sur les messages
-  réellement observés ; un pilote présent seulement sur l'autre machine peut
-  introduire un nouveau faux positif. C'est à ça que sert `--scan` avant de
-  lancer une collecte de 14 jours.
+- **CPU frequency.** `cpuinfo_avg_freq` (amd-pstate, recent kernels) is a
+  measurement; `scaling_cur_freq`, used as a fallback, is only a governor setpoint
+  and lies outright on AMD P-State. The true effective frequency would require
+  reading the APERF/MPERF MSRs — out of scope.
+- **PSI.** We store `avg10`, already smoothed by the kernel. The `total` counter
+  (cumulative, in µs) would be derivable and more precise; it can still be picked
+  up later if the 14-day horizon calls for it.
+- **`top_proc_cpu`** is a percentage of **one** core: 400 % is possible for a
+  multithreaded process. Scanning `/proc` costs a few milliseconds per tick over
+  ~500 processes.
+- **Timestamps in `epoch ms`, primary key.** Two ticks within the same
+  millisecond overwrite each other. At 1 Hz that is theoretical; with
+  `--period 0.001` it would no longer be.
+- **`is_gaming`** rests on a deliberately short list of hints. Each entry is a
+  hypothesis about the dataset; that is why the raw value is kept alongside.
+- **iGPU.** `amdgpu_busy_pct` on an iGPU measures a chip that shares its thermal
+  budget and its memory with the CPU: correlations there do not have the same
+  meaning as on a discrete card.
+- **kmsg error timestamps.** `/dev/kmsg` records are dated in µs since boot on a
+  clock that does not count suspended time: after a sleep, an earlier event can be
+  dated a few minutes ahead.  The journald backend, by contrast, gives an exact
+  absolute timestamp.
+- **Errors while the collector is stopped.** The replay covers the buffer of the
+  **current boot** only. An error from a previous boot is not recovered —
+  `journalctl -k -b -1` still has to be done by hand.
+- **The `BENIGN` list is empirical.** It was built from the messages actually
+  observed; a driver present only on the other machine can introduce a new false
+  positive. That is what `--scan` is for before launching a 14-day collection.
 
-## 📦 Dépendances
+## 📦 Dependencies
 
-Aucune obligatoire : `/proc`, `/sys` et la stdlib (`sqlite3` inclus) suffisent.
-`nvidia-ml-py` est optionnel et n'intéresse que les machines NVIDIA — sans lui,
-`NvmlReader` se désactive proprement au démarrage.
+None required: `/proc`, `/sys` and the standard library (`sqlite3` included) are
+enough. `nvidia-ml-py` is optional and only matters on NVIDIA machines — without
+it, `NvmlReader` disables itself cleanly at startup.
