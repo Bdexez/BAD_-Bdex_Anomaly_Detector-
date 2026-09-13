@@ -86,32 +86,6 @@ The existing suite exercises fake `/proc` and `/sys` trees, sensor discovery, co
 | [`collector/label.py`](collector/label.py) | Experiment annotation CLI |
 
 Coverage is hardware-dependent. Software counters cannot expose every physical failure, and heuristic workload labels need interpretation. The [complete reference](docs/REFERENCE.md) documents measurement limits, experiment protocols and machine-specific coverage.
-## 🧪 Experimental protocols
-
-### Identifying the 6 `gigabyte_wmi` probes
-
-The driver does not label them. They therefore stay named by index, and the
-mapping is determined experimentally — the rename will happen afterwards through
-`ALTER TABLE RENAME COLUMN`, which is no reason to guess now.
-
-1. `stress-ng --cpu $(nproc) --timeout 5m` → the probe that rises fastest and
-   falls fastest is on the VRM side;
-2. GPU load alone → the probe that follows is on the PCIe/chipset side;
-3. machine idle, window open → the probe that follows ambient temperature.
-
-> 📝 To be recorded here once it is done.
-
-### Targeted anomaly families
-
-| Label             | How it is provoked                                   |
-|-------------------|------------------------------------------------------|
-| `fan_curve_low`   | fan curve lowered in the BIOS                        |
-| `airflow_blocked` | air intake grille obstructed                         |
-| `oc_unstable`     | OC/undervolt out of margin → WHEA in `events`        |
-| `stress_ng`       | synthetic reference load                             |
-| `gaming`          | real load                                            |
-| `normal`          | everything else                                      |
-
 ## 🚨 Error detection
 
 This is the `events` table: a point-in-time event — an MCE lasts a microsecond —

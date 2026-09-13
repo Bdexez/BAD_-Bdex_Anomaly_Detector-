@@ -232,3 +232,29 @@ can be recomputed at will.
 The compositor is queried through the Hyprland IPC socket (not `hyprctl`, which
 forks) and at most every 5 seconds.
 
+## 🧪 Experimental protocols
+
+### Identifying the 6 `gigabyte_wmi` probes
+
+The driver does not label them. They therefore stay named by index, and the
+mapping is determined experimentally — the rename will happen afterwards through
+`ALTER TABLE RENAME COLUMN`, which is no reason to guess now.
+
+1. `stress-ng --cpu $(nproc) --timeout 5m` → the probe that rises fastest and
+   falls fastest is on the VRM side;
+2. GPU load alone → the probe that follows is on the PCIe/chipset side;
+3. machine idle, window open → the probe that follows ambient temperature.
+
+> 📝 To be recorded here once it is done.
+
+### Targeted anomaly families
+
+| Label             | How it is provoked                                   |
+|-------------------|------------------------------------------------------|
+| `fan_curve_low`   | fan curve lowered in the BIOS                        |
+| `airflow_blocked` | air intake grille obstructed                         |
+| `oc_unstable`     | OC/undervolt out of margin → WHEA in `events`        |
+| `stress_ng`       | synthetic reference load                             |
+| `gaming`          | real load                                            |
+| `normal`          | everything else                                      |
+
