@@ -347,3 +347,41 @@ Measured on the laptop (Ryzen 5 3500U, without root): 9 active counters;
 On the desktop, expect the GPU RAS counters to appear and, depending on the
 motherboard, EDAC.
 
+## ⚠️ Known limitations
+
+Saying them beats pretending.
+
+- **CPU frequency.** `cpuinfo_avg_freq` (amd-pstate, recent kernels) is a
+  measurement; `scaling_cur_freq`, used as a fallback, is only a governor setpoint
+  and lies outright on AMD P-State. The true effective frequency would require
+  reading the APERF/MPERF MSRs — out of scope.
+- **PSI.** We store `avg10`, already smoothed by the kernel. The `total` counter
+  (cumulative, in µs) would be derivable and more precise; it can still be picked
+  up later if the 14-day horizon calls for it.
+- **`top_proc_cpu`** is a percentage of **one** core: 400 % is possible for a
+  multithreaded process. Scanning `/proc` costs a few milliseconds per tick over
+  ~500 processes.
+- **Timestamps in `epoch ms`, primary key.** Two ticks within the same
+  millisecond overwrite each other. At 1 Hz that is theoretical; with
+  `--period 0.001` it would no longer be.
+- **`is_gaming`** rests on a deliberately short list of hints. Each entry is a
+  hypothesis about the dataset; that is why the raw value is kept alongside.
+- **iGPU.** `amdgpu_busy_pct` on an iGPU measures a chip that shares its thermal
+  budget and its memory with the CPU: correlations there do not have the same
+  meaning as on a discrete card.
+- **kmsg error timestamps.** `/dev/kmsg` records are dated in µs since boot on a
+  clock that does not count suspended time: after a sleep, an earlier event can be
+  dated a few minutes ahead.  The journald backend, by contrast, gives an exact
+  absolute timestamp.
+- **Errors while the collector is stopped.** The replay covers the buffer of the
+  **current boot** only. An error from a previous boot is not recovered —
+  `journalctl -k -b -1` still has to be done by hand.
+- **The `BENIGN` list is empirical.** It was built from the messages actually
+  observed; a driver present only on the other machine can introduce a new false
+  positive. That is what `--scan` is for before launching a 14-day collection.
+
+## 📦 Dependencies
+
+None required: `/proc`, `/sys` and the standard library (`sqlite3` included) are
+enough. `nvidia-ml-py` is optional and only matters on NVIDIA machines — without
+it, `NvmlReader` disables itself cleanly at startup.
