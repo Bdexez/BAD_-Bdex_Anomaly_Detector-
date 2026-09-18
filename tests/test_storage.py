@@ -4,6 +4,7 @@ import pathlib
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 from collector.storage import Storage, check_identifier
 
@@ -107,8 +108,15 @@ class StorageTest(unittest.TestCase):
             " ts_start INTEGER NOT NULL, ts_end INTEGER, label TEXT NOT NULL, notes TEXT);"
         )
         legacy = pathlib.Path(self.tmp.name) / "legacy.db"
-        first = Storage(legacy, old_schema)
-        first.add_event(1, "collector", "start", "info", "")
+        # Créer réellement l'ancienne base : passer par Storage appliquerait
+        # déjà la migration et masquerait une erreur d'ordre au démarrage.
+        with sqlite3.connect(legacy) as first:
+            first.executescript(old_schema.read_text())
+            first.execute(
+                "INSERT INTO events (ts, source, kind) VALUES (1, 'collector', 'start')"
+            )
+            first.execute("ALTER TABLE samples ADD COLUMN temperature REAL")
+            first.execute("INSERT INTO samples VALUES (1, 'boot', 42.5)")
         first.close()
 
         # Ouverte par la version courante : la colonne manquante est ajoutée
@@ -120,6 +128,34 @@ class StorageTest(unittest.TestCase):
         self.assertTrue(migrated.add_event(2, "kmsg", "mce", "error", "x", "k"))
         self.assertFalse(migrated.add_event(2, "kmsg", "mce", "error", "x", "k"))
         self.assertEqual(migrated.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], 2)
+        self.assertEqual(
+            migrated.conn.execute("SELECT * FROM samples").fetchall(), [(1, "boot", 42.5)]
+        )
+
+    def test_failed_batch_is_rolled_back_and_connection_is_reusable(self):
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.storage.insert_samples([{"ts": 1, "boot_id": "b"}, {"ts": 2}])
+        self.assertEqual(self.storage.count_samples(), 0)
+        self.assertFalse(self.storage.conn.in_transaction)
+        self.storage.insert_samples([{"ts": 3, "boot_id": "b"}])
+        self.assertEqual(self.storage.count_samples(), 1)
+
+    def test_automatic_rollback_does_not_mask_the_original_error(self):
+        self.storage.conn.executescript(
+            "CREATE TRIGGER reject_sample BEFORE INSERT ON samples BEGIN "
+            "SELECT RAISE(ROLLBACK, 'sample rejected'); END;"
+        )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "sample rejected"):
+            self.storage.insert_samples([{"ts": 1, "boot_id": "b"}])
+        self.assertFalse(self.storage.conn.in_transaction)
+
+    def test_initialization_failure_closes_the_connection(self):
+        connection = sqlite3.connect(":memory:")
+        with mock.patch("collector.storage.sqlite3.connect", return_value=connection):
+            with self.assertRaises(FileNotFoundError):
+                Storage(self.db, self.db.parent / "missing.sql")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
 
     def test_events(self):
         self.storage.add_event(1, "collector", "reader_fail", "warning", "nvml: boom")

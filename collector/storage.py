@@ -37,9 +37,17 @@ class Storage:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.conn = sqlite3.connect(path, isolation_level=None)
-        self.conn.executescript(pathlib.Path(schema).read_text())
-        self._migrate()
-        self._columns: set[str] = self._existing_columns()
+        try:
+            # Le schéma courant crée des index sur les nouvelles colonnes :
+            # une base existante doit être migrée AVANT de l'exécuter.
+            self._migrate()
+            self.conn.executescript(pathlib.Path(schema).read_text())
+            # Un ancien fichier de schéma peut aussi créer une base neuve.
+            self._migrate()
+            self._columns: set[str] = self._existing_columns()
+        except BaseException:
+            self.conn.close()
+            raise
 
     def _migrate(self) -> None:
         """Rattrape les bases créées par une version antérieure du schéma.
@@ -49,6 +57,8 @@ class Storage:
         déduplication des events sans le dire.
         """
         columns = {r[1] for r in self.conn.execute("PRAGMA table_info(events)")}
+        if not columns:
+            return
         if "dedup" not in columns:
             self.conn.execute("ALTER TABLE events ADD COLUMN dedup TEXT")
             log.info("migration: events.dedup ajoutée")
@@ -109,7 +119,10 @@ class Storage:
             self.conn.executemany(sql, [[row.get(c) for c in cols] for row in rows])
             self.conn.execute("COMMIT")
         except Exception:
-            self.conn.execute("ROLLBACK")
+            # Certaines erreurs SQLite annulent déjà la transaction entière.
+            # Un second ROLLBACK masquerait alors l'erreur d'origine.
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
             raise
         return len(rows)
 
