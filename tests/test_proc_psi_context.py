@@ -76,6 +76,18 @@ class ProcTest(unittest.TestCase):
         self.assertIn("cpu1_util", reader.fields)
         self.assertNotIn("cpu2_util", reader.fields)
 
+    def test_non_contiguous_cpu_ids_keep_their_identity(self):
+        write(self.root / "stat", "cpu 0 0 0 100 0\ncpu0 0 0 0 50 0\ncpu3 0 0 0 50 0\n")
+        reader = ProcReader(root=self.root)
+        self.assertTrue(reader.setup())
+        self.assertIn("cpu3_util", reader.fields)
+        self.assertNotIn("cpu1_util", reader.fields)
+        reader.read()
+        write(self.root / "stat", "cpu 20 0 0 180 0\ncpu0 0 0 0 100 0\ncpu3 20 0 0 80 0\n")
+        out = reader.read()
+        self.assertEqual(out["cpu0_util"], 0.0)
+        self.assertAlmostEqual(out["cpu3_util"], 0.4)
+
     def test_first_read_has_no_utilisation(self):
         reader = ProcReader(root=self.root)
         reader.setup()

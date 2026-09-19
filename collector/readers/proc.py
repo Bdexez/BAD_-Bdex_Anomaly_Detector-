@@ -56,7 +56,7 @@ class ProcReader(Reader):
         self.fields = ["cpu_util", "load1", "mem_used_mb", "swap_used_mb"]
         if self._freq_paths:
             self.fields.append("cpu_freq_avg")
-        self.fields += [f"cpu{i}_util" for i in range(len(self._cpus))]
+        self.fields += [f"{name}_util" for name in self._cpus]
         return True
 
     def _find_freq_paths(self) -> list[pathlib.Path]:
@@ -122,7 +122,7 @@ class ProcReader(Reader):
         stat = self._read_stat()
 
         for label, key in [("cpu_util", "cpu")] + [
-            (f"cpu{i}_util", name) for i, name in enumerate(self._cpus)
+            (f"{name}_util", name) for name in self._cpus
         ]:
             out[label] = self._util(key, stat.get(key))
 
