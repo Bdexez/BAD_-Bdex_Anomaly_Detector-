@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import abc
 import logging
+import math
 from collections.abc import Callable
 
 log = logging.getLogger(__name__)
@@ -100,6 +101,7 @@ class ReaderState:
         self.on_disable = on_disable
         self._allowed = frozenset(reader.fields)
         self._warned_unknown = False
+        self._warned_invalid: set[str] = set()
 
     def read(self) -> dict[str, float | str | None]:
         if not self.enabled:
@@ -117,13 +119,32 @@ class ReaderState:
                 log.warning(
                     "reader %s renvoie des clés non déclarées, ignorées: %s",
                     self.reader.name,
-                    ", ".join(sorted(unknown)),
+                    ", ".join(sorted(map(repr, unknown))),
                 )
                 self._warned_unknown = True
             data = {k: v for k, v in data.items() if k in self._allowed}
 
+        # Une valeur incompatible avec SQLite ne doit pas emporter les mesures
+        # saines de tous les readers du batch. Les NaN/inf ne sont pas non plus
+        # des observations exploitables : on conserve un trou explicite.
+        clean = {}
+        for field, value in data.items():
+            if value is None:
+                valid = True
+            elif field in self.reader.text_fields:
+                valid = isinstance(value, str)
+            elif isinstance(value, int):
+                valid = -(2**63) <= value < 2**63
+            else:
+                valid = isinstance(value, float) and math.isfinite(value)
+            clean[field] = value if valid else None
+            if not valid and field not in self._warned_invalid:
+                log.warning("reader %s: valeur invalide pour %s, remplacée par NULL",
+                            self.reader.name, field)
+                self._warned_invalid.add(field)
+
         self.failures = 0
-        return data
+        return clean
 
     def _fail(self, exc: Exception) -> dict[str, float | str | None]:
         self.failures += 1

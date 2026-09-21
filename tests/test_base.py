@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from collector.readers.base import Reader, ReaderState
 
@@ -32,6 +33,41 @@ class ReaderStateTest(unittest.TestCase):
         # Une clé hors schéma ferait échouer l'INSERT et emporterait le batch
         # entier, donc les données des autres readers avec.
         state = ReaderState(FakeReader([{"a": 1.0, "surprise": 2.0}]))
+        self.assertEqual(state.read(), {"a": 1.0})
+
+    def test_invalid_values_leave_other_metrics_available(self):
+        for value in ([], {}, object(), "12.5", float("nan"), float("inf"),
+                      -float("inf"), 2**63, -(2**63) - 1, 10**1000):
+            with self.subTest(value_type=type(value).__name__):
+                state = ReaderState(FakeReader([{"a": value, "b": 42.0}]))
+                self.assertEqual(state.read(), {"a": None, "b": 42.0})
+                self.assertTrue(state.enabled)
+                self.assertEqual(state.failures, 0)
+
+    def test_valid_numeric_values_are_preserved(self):
+        for value in (None, 0, True, 1.25, -(2**63), 2**63 - 1):
+            with self.subTest(value=value):
+                state = ReaderState(FakeReader([{"a": value}]))
+                self.assertEqual(state.read(), {"a": value})
+
+    def test_text_fields_accept_only_text_or_null(self):
+        class TextReader(FakeReader):
+            text_fields = frozenset({"b"})
+
+        state = ReaderState(TextReader([{"b": "42"}, {"b": 42}, {"b": None}]))
+        self.assertEqual(state.read(), {"b": "42"})
+        self.assertEqual(state.read(), {"b": None})
+        self.assertEqual(state.read(), {"b": None})
+
+    def test_invalid_value_warning_is_not_repeated_every_tick(self):
+        state = ReaderState(FakeReader([{"a": []}] * 3))
+        with mock.patch("collector.readers.base.log.warning") as warning:
+            for _ in range(3):
+                state.read()
+        warning.assert_called_once()
+
+    def test_mixed_unknown_key_types_are_dropped_without_a_crash(self):
+        state = ReaderState(FakeReader([{"a": 1.0, "surprise": 2.0, 123: 3.0}]))
         self.assertEqual(state.read(), {"a": 1.0})
 
     def test_disables_after_three_failures(self):
