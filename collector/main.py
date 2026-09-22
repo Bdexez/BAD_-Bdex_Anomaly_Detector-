@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import pathlib
 import platform
@@ -35,6 +36,12 @@ FLUSH_INTERVAL = 30.0
 MAX_BUFFER = 10_000
 
 SCHEMA = pathlib.Path(__file__).resolve().parent.parent / "schema.sql"
+
+
+def validate_seconds(value: float, option: str) -> None:
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{option} doit être un nombre fini > 0")
+
 
 
 def candidate_readers(boot: str = "") -> list[Reader]:
@@ -88,6 +95,7 @@ def now_ms() -> int:
 
 class Collector:
     def __init__(self, db: str, period: float, schema: pathlib.Path = SCHEMA):
+        validate_seconds(period, "--period")
         self.storage = Storage(db, schema)
         self.period = period
         self.running = True
@@ -160,6 +168,8 @@ class Collector:
         deadline = start
         last_flush = start
         try:
+            if duration is not None:
+                validate_seconds(duration, "--duration")
             while self.running:
                 deadline += self.period
                 buffer.append(self.tick())
@@ -340,8 +350,12 @@ def main() -> None:
         run_scan()
         return
 
-    if args.period <= 0:
-        ap.error("--period doit être > 0")
+    try:
+        validate_seconds(args.period, "--period")
+        if args.duration is not None:
+            validate_seconds(args.duration, "--duration")
+    except ValueError as exc:
+        ap.error(str(exc))
 
     collector = Collector(args.db, args.period, args.schema)
     signal.signal(signal.SIGINT, collector.stop)

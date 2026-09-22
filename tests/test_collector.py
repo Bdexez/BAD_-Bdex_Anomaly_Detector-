@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from contextlib import contextmanager, redirect_stderr
+import io
 import pathlib
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 from unittest import mock
 
@@ -46,6 +51,7 @@ class CollectorTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         return Collector(str(self.db), period=0.01, schema=SCHEMA)
+
 
     def query(self, sql):
         import sqlite3
@@ -102,6 +108,39 @@ class CollectorTest(unittest.TestCase):
             collector.run(duration=0.03)
         self.assertGreaterEqual(len(self.query("SELECT ts FROM samples")), 2)
 
+
+
+
+    def test_invalid_period_is_rejected_before_creating_storage(self):
+        for period in (0.0, -1.0, float("nan"), float("inf"), -float("inf")):
+            with self.subTest(period=period), mock.patch.object(main_module, "Storage") as storage:
+                with self.assertRaises(ValueError):
+                    Collector(str(self.db), period=period)
+                storage.assert_not_called()
+
+    def test_invalid_duration_is_rejected_and_resources_are_closed(self):
+        for duration in (0.0, -1.0, float("nan"), float("inf"), -float("inf")):
+            with self.subTest(duration=duration):
+                reader = CountingReader()
+                collector = self.collector([reader])
+                with self.assertRaises(ValueError):
+                    collector.run(duration=duration)
+                self.assertEqual(reader.ticks, 0)
+                self.assertTrue(reader.closed)
+
+    def test_cli_rejects_invalid_timings_before_starting_collection(self):
+        for option in ("--period", "--duration"):
+            for value in ("0", "-1", "nan", "inf", "-inf"):
+                with self.subTest(option=option, value=value), \
+                     mock.patch("sys.argv", ["collector", f"{option}={value}"]), \
+                     mock.patch.object(main_module, "Collector") as collector, \
+                     redirect_stderr(io.StringIO()) as stderr:
+                    with self.assertRaises(SystemExit) as error:
+                        main_module.main()
+                    self.assertEqual(error.exception.code, 2)
+                    self.assertIn("nombre fini > 0", stderr.getvalue())
+                    collector.assert_not_called()
+
     def test_reader_events_reach_the_database_with_their_own_timestamp(self):
         class Alarming(CountingReader):
             def setup(self):
@@ -133,3 +172,4 @@ class CollectorTest(unittest.TestCase):
         collector.run(duration=0.03)
         columns = {r[1] for r in self.query("PRAGMA table_info(samples)")}
         self.assertNotIn("undeclared", columns)
+
