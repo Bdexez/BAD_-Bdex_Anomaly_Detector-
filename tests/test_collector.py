@@ -52,6 +52,19 @@ class CollectorTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         return Collector(str(self.db), period=0.01, schema=SCHEMA)
 
+    @contextmanager
+    def clock(self, collector):
+        """Avance aux deadlines sans attendre ni dépendre de la charge hôte."""
+        now = [0.0]
+
+        def wait(delay):
+            now[0] += delay
+            return False
+
+        with mock.patch.object(main_module.time, "monotonic", side_effect=lambda: now[0]), \
+             mock.patch.object(main_module, "now_ms", side_effect=lambda: 1000 + int(now[0] * 1000)), \
+             mock.patch.object(collector._stop_event, "wait", side_effect=wait):
+            yield now
 
     def query(self, sql):
         import sqlite3
@@ -101,15 +114,70 @@ class CollectorTest(unittest.TestCase):
             collector.run(duration=0.05)  # ne doit pas lever
 
     def test_flush_is_time_based_for_slow_periods(self):
-        # 3 samples seulement : bien en dessous de FLUSH_EVERY. Sans flush au
-        # temps, rien n'atteindrait le disque avant l'arrêt.
         collector = self.collector([CountingReader()])
-        with mock.patch.object(main_module, "FLUSH_INTERVAL", 0.0):
-            collector.run(duration=0.03)
-        self.assertGreaterEqual(len(self.query("SELECT ts FROM samples")), 2)
+        collector.period = 60.0
+        writes = []
+        insert = collector.storage.insert_samples
+        with self.clock(collector) as now:
+            def record(rows):
+                writes.append((now[0], [row["value"] for row in rows]))
+                return insert(rows)
 
+            with mock.patch.object(collector.storage, "insert_samples", side_effect=record):
+                collector.run(duration=65.0)
+        # Le premier sample est écrit à 30 s, sans attendre le tick à 60 s.
+        self.assertEqual(writes, [(30.0, [1.0]), (60.0, [2.0])])
 
+    def test_duration_shorter_than_period_does_not_wait_for_next_tick(self):
+        reader = CountingReader()
+        collector = self.collector([reader])
+        collector.period = 3600.0
+        with self.clock(collector) as now:
+            collector.run(duration=2.0)
+            self.assertEqual(now[0], 2.0)
+        self.assertEqual(reader.ticks, 1)
+        self.assertTrue(reader.closed)
 
+    def test_sigterm_wakes_a_long_wait_and_flushes_pending_samples(self):
+        code = textwrap.dedent("""\
+            import os
+            import signal
+            import sys
+            import threading
+            from collector import main
+
+            main.candidate_readers = lambda boot='': []
+            collector = main.Collector(sys.argv[1], period=3600.0)
+            signal.signal(signal.SIGTERM, collector.stop)
+            timer = threading.Timer(0.05, lambda: os.kill(os.getpid(), signal.SIGTERM))
+            timer.start()
+            collector.run()
+            timer.join()
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", code, str(self.db)], cwd=SCHEMA.parent,
+            capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.query("SELECT ts FROM samples")), 1)
+        self.assertEqual(self.query("SELECT kind FROM events ORDER BY id"), [("start",), ("stop",)])
+
+    def test_slow_reader_does_not_trigger_catch_up_ticks(self):
+        reader = CountingReader()
+        collector = self.collector([reader])
+        collector.period = 1.0
+        tick = collector.tick
+        ticks = []
+        with self.clock(collector) as now:
+            def slow_tick():
+                ticks.append(now[0])
+                row = tick()
+                now[0] += 3.0
+                return row
+
+            with mock.patch.object(collector, "tick", side_effect=slow_tick):
+                collector.run(duration=6.0)
+        self.assertEqual(ticks, [0.0, 4.0])
 
     def test_invalid_period_is_rejected_before_creating_storage(self):
         for period in (0.0, -1.0, float("nan"), float("inf"), -float("inf")):
@@ -173,3 +241,18 @@ class CollectorTest(unittest.TestCase):
         columns = {r[1] for r in self.query("PRAGMA table_info(samples)")}
         self.assertNotIn("undeclared", columns)
 
+    def test_invalid_metric_does_not_lose_samples_from_other_readers(self):
+        class Invalid(Reader):
+            name = "invalid"
+            fields = ["bad"]
+
+            def read(self):
+                return {"bad": ["not a SQLite value"]}
+
+        collector = self.collector([CountingReader(), Invalid()])
+        collector.period = 1.0
+        with self.clock(collector):
+            collector.run(duration=2.0)
+        self.assertEqual(
+            self.query("SELECT value, bad FROM samples ORDER BY ts"), [(1.0, None), (2.0, None)]
+        )

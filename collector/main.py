@@ -16,6 +16,7 @@ import os
 import pathlib
 import platform
 import signal
+import threading
 import time
 
 from . import errors as error_catalogue
@@ -41,7 +42,6 @@ SCHEMA = pathlib.Path(__file__).resolve().parent.parent / "schema.sql"
 def validate_seconds(value: float, option: str) -> None:
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{option} doit être un nombre fini > 0")
-
 
 
 def candidate_readers(boot: str = "") -> list[Reader]:
@@ -99,6 +99,7 @@ class Collector:
         self.storage = Storage(db, schema)
         self.period = period
         self.running = True
+        self._stop_event = threading.Event()
         # Le boot_id est résolu avant les readers : KmsgReader s'en sert comme
         # préfixe de clé de déduplication (les numéros de séquence kmsg ne sont
         # uniques qu'à l'intérieur d'un boot).
@@ -140,6 +141,7 @@ class Collector:
     def stop(self, *_):
         log.info("arrêt demandé")
         self.running = False
+        self._stop_event.set()
 
     def tick(self) -> dict:
         row: dict = {"ts": now_ms(), "boot_id": self.boot}
@@ -164,36 +166,47 @@ class Collector:
         # Cadence sans dérive : on vise des deadlines absolues, on ne fait pas
         # sleep(period) après un travail de durée variable — sinon on perd
         # quelques ms par tick et les timestamps glissent sur 14 jours.
-        start = time.monotonic()
-        deadline = start
-        last_flush = start
         try:
             if duration is not None:
                 validate_seconds(duration, "--duration")
+            start = time.monotonic()
+            end = None if duration is None else start + duration
+            deadline = start
+            last_flush = start
+            since_flush = 0
             while self.running:
-                deadline += self.period
-                buffer.append(self.tick())
-
                 now = time.monotonic()
-                if len(buffer) >= FLUSH_EVERY or now - last_flush >= FLUSH_INTERVAL:
-                    self.flush(buffer)
-                    last_flush = now
-                elif len(buffer) >= MAX_BUFFER:
-                    log.error("buffer saturé (%d), samples abandonnés", len(buffer))
-                    buffer.clear()
+                if end is not None and now >= end:
+                    break
+                if now >= deadline:
+                    buffer.append(self.tick())
+                    since_flush += 1
+                    if len(buffer) > MAX_BUFFER:
+                        dropped = len(buffer) - MAX_BUFFER
+                        del buffer[:dropped]
+                        log.error("buffer saturé, %d sample(s) les plus anciens abandonnés", dropped)
+                    deadline += self.period
+                    now = time.monotonic()
+                    if deadline <= now:
+                        # Un reader lent ne crée pas de ticks de rattrapage.
+                        log.debug("tick en retard de %.3fs", now - deadline)
+                        deadline = now + self.period
 
-                if duration is not None and now - start >= duration:
+                if since_flush >= FLUSH_EVERY or now - last_flush >= FLUSH_INTERVAL:
+                    self.flush(buffer)
+                    last_flush = time.monotonic()
+                    since_flush = 0
+
+                if end is not None and time.monotonic() >= end:
                     break
 
-                delay = deadline - time.monotonic()
+                # Le flush a sa propre échéance, même si --period vaut 60 s.
+                wake_at = min(deadline, last_flush + FLUSH_INTERVAL)
+                if end is not None:
+                    wake_at = min(wake_at, end)
+                delay = wake_at - time.monotonic()
                 if delay > 0:
-                    time.sleep(delay)
-                else:
-                    # On a pris du retard (I/O lent, système saturé). On
-                    # resynchronise au lieu d'accumuler une dette et de partir
-                    # en boucle serrée.
-                    log.debug("tick en retard de %.3fs", -delay)
-                    deadline = time.monotonic()
+                    self._stop_event.wait(min(delay, threading.TIMEOUT_MAX))
         except KeyboardInterrupt:
             log.info("interruption clavier")
         finally:
