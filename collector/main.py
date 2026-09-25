@@ -16,6 +16,7 @@ import os
 import pathlib
 import platform
 import signal
+import sqlite3
 import threading
 import time
 
@@ -42,6 +43,13 @@ SCHEMA = pathlib.Path(__file__).resolve().parent.parent / "schema.sql"
 def validate_seconds(value: float, option: str) -> None:
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{option} doit être un nombre fini > 0")
+
+
+def close_reader(reader: Reader) -> None:
+    try:
+        reader.close()
+    except Exception:
+        log.exception("close() de %s a échoué", reader.name)
 
 
 def candidate_readers(boot: str = "") -> list[Reader]:
@@ -80,12 +88,14 @@ def build_readers(on_disable=None, emitter=None, boot: str = "") -> list[ReaderS
             ok = reader.setup()
         except Exception as exc:
             log.error("setup %s a échoué: %s", reader.name, exc)
+            close_reader(reader)
             continue
         if ok:
             active.append(ReaderState(reader, on_disable=on_disable))
             log.info("reader actif: %s -> %s", reader.name, ", ".join(reader.fields))
         else:
             log.info("reader indisponible: %s", reader.name)
+            close_reader(reader)
     return active
 
 
@@ -100,25 +110,33 @@ class Collector:
         self.period = period
         self.running = True
         self._stop_event = threading.Event()
+        self._closed = False
+        self.readers: list[ReaderState] = []
         # Le boot_id est résolu avant les readers : KmsgReader s'en sert comme
         # préfixe de clé de déduplication (les numéros de séquence kmsg ne sont
         # uniques qu'à l'intérieur d'un boot).
-        self.boot = boot_id()
-        self.storage.register_boot(self.boot, now_ms(), platform.release())
-        self.readers = build_readers(
-            on_disable=self._record_failure,
-            emitter=self._store_event,
-            boot=self.boot,
-        )
-
-        for state in self.readers:
-            reader = state.reader
-            self.storage.ensure_columns(
-                reader.fields, {f: reader.column_type(f) for f in reader.fields}
+        try:
+            self.boot = boot_id()
+            self.storage.register_boot(self.boot, now_ms(), platform.release())
+            self.readers = build_readers(
+                on_disable=self._record_failure,
+                emitter=self._store_event,
+                boot=self.boot,
             )
 
-        log.info("hwmon détectés: %s", ", ".join(sorted(list_hwmon())) or "aucun")
-        self.storage.add_event(now_ms(), "collector", "start", "info", f"period={period}s")
+            for state in self.readers:
+                reader = state.reader
+                self.storage.ensure_columns(
+                    reader.fields, {f: reader.column_type(f) for f in reader.fields}
+                )
+
+            log.info("hwmon détectés: %s", ", ".join(sorted(list_hwmon())) or "aucun")
+            self._store_event("collector", "start", "info", f"period={period}s")
+        except BaseException:
+            for state in self.readers:
+                close_reader(state.reader)
+            self.storage.close()
+            raise
 
     def _store_event(
         self,
@@ -213,16 +231,26 @@ class Collector:
             self.close(buffer)
 
     def close(self, buffer: list[dict] | None = None) -> None:
-        self.flush(buffer or [])
-        for state in self.readers:
+        if self._closed:
+            return
+        self._closed = True
+        self.running = False
+        self._stop_event.set()
+        buffer = [] if buffer is None else buffer
+        try:
+            for state in self.readers:
+                close_reader(state.reader)
+            self._store_event("collector", "stop", "info", "")
+            self.flush(buffer)
+            if buffer:
+                log.error("arrêt avec %d sample(s) non enregistrés", len(buffer))
             try:
-                state.reader.close()
-            except Exception:
-                log.exception("close() de %s a échoué", state.reader.name)
-        self.storage.add_event(now_ms(), "collector", "stop", "info", "")
-        log.info("%d samples en base", self.storage.count_samples())
-        self.storage.close()
-        log.info("terminé proprement")
+                log.info("%d samples en base", self.storage.count_samples())
+            except sqlite3.Error:
+                log.exception("comptage des samples impossible à l'arrêt")
+        finally:
+            self.storage.close()
+        log.info("collecteur fermé")
 
 
 def _cpu_model() -> str:
@@ -252,6 +280,7 @@ def run_doctor() -> None:
             ok = reader.setup()
         except Exception as exc:
             print(f"  [!!] {reader.name:14} erreur de configuration: {exc}")
+            close_reader(reader)
             continue
         if isinstance(reader, R.ErrorCounterReader) and ok:
             counters = reader
@@ -261,7 +290,7 @@ def run_doctor() -> None:
         detail = ", ".join(reader.fields) if ok else "absent de cette machine"
         print(f"  [{marker}] {reader.name:14} {detail[:96]}")
         if reader is not counters and reader is not kmsg:
-            reader.close()
+            close_reader(reader)
 
     print("\nDétection d'erreurs")
     kinds = error_catalogue.catalogue()
@@ -286,7 +315,7 @@ def run_doctor() -> None:
 
     for reader in (kmsg, counters):
         if reader is not None:
-            reader.close()
+            close_reader(reader)
 
 
 def run_scan(top: int = 6) -> None:
@@ -308,9 +337,10 @@ def run_scan(top: int = 6) -> None:
             if not reader.setup():
                 reason = getattr(reader, "unavailable_reason", "") or "indisponible"
                 print(f"[--] {reader.name}: {reason}")
-            reader.close()
         except Exception as exc:
             print(f"[!!] {reader.name}: {exc}")
+        finally:
+            close_reader(reader)
 
     if not found:
         print("Aucune erreur détectée sur le boot courant.")

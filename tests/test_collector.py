@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager, redirect_stderr
 import io
 import pathlib
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,7 @@ from unittest import mock
 from collector import main as main_module
 from collector.main import SCHEMA, Collector
 from collector.readers.base import Reader
+from collector.storage import Storage
 
 
 class CountingReader(Reader):
@@ -50,7 +52,9 @@ class CollectorTest(unittest.TestCase):
         patcher = mock.patch.object(main_module, "candidate_readers", lambda boot="": readers)
         patcher.start()
         self.addCleanup(patcher.stop)
-        return Collector(str(self.db), period=0.01, schema=SCHEMA)
+        collector = Collector(str(self.db), period=0.01, schema=SCHEMA)
+        self.addCleanup(collector.close)
+        return collector
 
     @contextmanager
     def clock(self, collector):
@@ -178,6 +182,55 @@ class CollectorTest(unittest.TestCase):
             with mock.patch.object(collector, "tick", side_effect=slow_tick):
                 collector.run(duration=6.0)
         self.assertEqual(ticks, [0.0, 4.0])
+
+    def test_unavailable_and_failed_setup_readers_are_closed(self):
+        absent, broken, good = CountingReader(), CountingReader(), CountingReader()
+        absent.setup = mock.Mock(return_value=False)
+        broken.setup = mock.Mock(side_effect=RuntimeError("configuration impossible"))
+        collector = self.collector([absent, broken, good])
+        self.assertTrue(absent.closed)
+        self.assertTrue(broken.closed)
+        self.assertEqual([state.reader for state in collector.readers], [good])
+
+    def test_close_failure_does_not_prevent_other_readers_from_closing(self):
+        broken, good = CountingReader(), CountingReader()
+        broken.close = mock.Mock(side_effect=OSError("fermeture impossible"))
+        collector = self.collector([broken, good])
+        collector.close()
+        self.assertTrue(good.closed)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            collector.storage.conn.execute("SELECT 1")
+
+    def test_doctor_closes_a_reader_after_setup_failure(self):
+        reader = CountingReader()
+        reader.setup = mock.Mock(side_effect=RuntimeError("configuration impossible"))
+        with mock.patch.object(main_module, "candidate_readers", return_value=[reader]), \
+             mock.patch("builtins.print"):
+            main_module.run_doctor()
+        self.assertTrue(reader.closed)
+
+    def test_scan_closes_a_reader_after_setup_failure(self):
+        reader, counters = CountingReader(), CountingReader()
+        reader.setup = mock.Mock(side_effect=RuntimeError("configuration impossible"))
+        with mock.patch.object(main_module.R, "KmsgReader", return_value=reader), \
+             mock.patch.object(main_module.R, "ErrorCounterReader", return_value=counters), \
+             mock.patch("builtins.print"):
+            main_module.run_scan()
+        self.assertTrue(reader.closed)
+        self.assertTrue(counters.closed)
+
+    def test_failed_initialization_closes_active_readers_and_storage(self):
+        reader = CountingReader()
+        reader.fields = ["invalid column"]
+        storage = Storage(self.db, SCHEMA)
+        self.addCleanup(storage.close)
+        with mock.patch.object(main_module, "Storage", return_value=storage), \
+             mock.patch.object(main_module, "candidate_readers", return_value=[reader]):
+            with self.assertRaises(ValueError):
+                Collector(str(self.db), period=1.0)
+        self.assertTrue(reader.closed)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            storage.conn.execute("SELECT 1")
 
     def test_invalid_period_is_rejected_before_creating_storage(self):
         for period in (0.0, -1.0, float("nan"), float("inf"), -float("inf")):
