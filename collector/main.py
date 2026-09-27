@@ -10,6 +10,7 @@ collecte normalement.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import logging
 import math
 import os
@@ -36,6 +37,7 @@ FLUSH_EVERY = 30
 FLUSH_INTERVAL = 30.0
 #: Garde-fou si la base devient inécrivable : on jette plutôt que d'OOM.
 MAX_BUFFER = 10_000
+MAX_EVENT_BUFFER = 10_000
 
 SCHEMA = pathlib.Path(__file__).resolve().parent.parent / "schema.sql"
 
@@ -111,6 +113,8 @@ class Collector:
         self.running = True
         self._stop_event = threading.Event()
         self._closed = False
+        self._event_buffer: deque[tuple] = deque()
+        self._event_dedup: set[str] = set()
         self.readers: list[ReaderState] = []
         # Le boot_id est résolu avant les readers : KmsgReader s'en sert comme
         # préfixe de clé de déduplication (les numéros de séquence kmsg ne sont
@@ -147,14 +151,53 @@ class Collector:
         ts: int | None = None,
         dedup: str | None = None,
     ) -> bool:
-        """Canal d'événements offert aux readers. Retourne False sur doublon."""
-        stored = self.storage.add_event(ts or now_ms(), source, kind, severity, message, dedup)
+        """Accepte un événement, en RAM si nécessaire. False sur doublon.
+
+        Une panne de stockage n'est pas une panne de capteur : elle ne doit
+        pas désactiver les readers qui émettent des événements.
+        """
+        event = (now_ms() if ts is None else ts, source, kind, severity, message[:4000], dedup)
+        if self._event_buffer:
+            stored = self._queue_event(event)
+        else:
+            try:
+                stored = self.storage.add_event(*event)
+            except (sqlite3.Error, OSError):
+                log.exception("écriture d'événement impossible, mise en attente")
+                stored = self._queue_event(event)
         if stored and severity in (error_catalogue.CRITICAL, error_catalogue.ERROR):
             log.warning("[%s] %s: %s", severity, kind, message[:200])
         return stored
 
+    def _queue_event(self, event: tuple) -> bool:
+        dedup = event[-1]
+        if dedup is not None and dedup in self._event_dedup:
+            return False
+        if len(self._event_buffer) >= MAX_EVENT_BUFFER:
+            dropped = self._event_buffer.popleft()
+            if dropped[-1] is not None:
+                self._event_dedup.discard(dropped[-1])
+            log.error("buffer d'événements saturé, événement le plus ancien abandonné")
+        self._event_buffer.append(event)
+        if dedup is not None:
+            self._event_dedup.add(dedup)
+        return True
+
+    def _flush_events(self) -> None:
+        while self._event_buffer:
+            event = self._event_buffer[0]
+            try:
+                self.storage.add_event(*event)
+            except (sqlite3.Error, OSError):
+                log.exception("écriture de %d événement(s) en attente impossible",
+                              len(self._event_buffer))
+                break
+            self._event_buffer.popleft()
+            if event[-1] is not None:
+                self._event_dedup.discard(event[-1])
+
     def _record_failure(self, name: str, message: str) -> None:
-        self.storage.add_event(now_ms(), "collector", "reader_fail", "warning", f"{name}: {message}")
+        self._store_event("collector", "reader_fail", "warning", f"{name}: {message}")
 
     def stop(self, *_):
         log.info("arrêt demandé")
@@ -168,16 +211,18 @@ class Collector:
         return row
 
     def flush(self, buffer: list[dict]) -> None:
+        self._flush_events()
         if not buffer:
             return
         try:
             self.storage.insert_samples(buffer)
         except Exception:
             # Base pleine, disque en lecture seule, corruption : on log et on
-            # continue. Perdre un batch vaut mieux que perdre le daemon — et
-            # les prochains ticks peuvent très bien repasser.
+            # continue. Le batch reste en RAM pour la prochaine tentative ;
+            # seule la saturation du buffer autorise la perte des plus anciens.
             log.exception("écriture de %d samples impossible", len(buffer))
-        buffer.clear()
+        else:
+            buffer.clear()
 
     def run(self, duration: float | None = None) -> None:
         buffer: list[dict] = []
@@ -242,8 +287,9 @@ class Collector:
                 close_reader(state.reader)
             self._store_event("collector", "stop", "info", "")
             self.flush(buffer)
-            if buffer:
-                log.error("arrêt avec %d sample(s) non enregistrés", len(buffer))
+            if buffer or self._event_buffer:
+                log.error("arrêt avec %d sample(s) et %d événement(s) non enregistrés",
+                          len(buffer), len(self._event_buffer))
             try:
                 log.info("%d samples en base", self.storage.count_samples())
             except sqlite3.Error:

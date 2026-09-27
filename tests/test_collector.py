@@ -183,6 +183,93 @@ class CollectorTest(unittest.TestCase):
                 collector.run(duration=6.0)
         self.assertEqual(ticks, [0.0, 4.0])
 
+    def test_samples_survive_a_transient_write_failure(self):
+        collector = self.collector([])
+        buffer = [{"ts": 1, "boot_id": "b"}, {"ts": 2, "boot_id": "b"}]
+        expected = buffer.copy()
+        with mock.patch.object(collector.storage, "insert_samples", side_effect=OSError("plein")):
+            collector.flush(buffer)
+        self.assertEqual(buffer, expected)
+        self.assertEqual(collector.storage.count_samples(), 0)
+        collector.flush(buffer)
+        self.assertEqual(buffer, [])
+        self.assertEqual(self.query("SELECT ts FROM samples ORDER BY ts"), [(1,), (2,)])
+
+    def test_persistent_failure_keeps_a_bounded_buffer_and_retries_in_batches(self):
+        collector = self.collector([CountingReader()])
+        collector.period = 1.0
+        insert = collector.storage.insert_samples
+        attempts = []
+
+        def unavailable_then_recovered(rows):
+            attempts.append(len(rows))
+            if len(attempts) <= 3:
+                raise sqlite3.OperationalError("disque plein")
+            return insert(rows)
+
+        with self.clock(collector), \
+             mock.patch.object(main_module, "MAX_BUFFER", 3), \
+             mock.patch.object(main_module, "FLUSH_EVERY", 2), \
+             mock.patch.object(collector.storage, "insert_samples", side_effect=unavailable_then_recovered):
+            collector.run(duration=5.5)
+        self.assertEqual(attempts, [2, 3, 3, 3])
+        self.assertEqual(self.query("SELECT value FROM samples ORDER BY ts"), [(4.0,), (5.0,), (6.0,)])
+
+    def test_locked_database_does_not_disable_an_event_emitting_reader(self):
+        class Alarming(CountingReader):
+            def read(self):
+                self.emit("mce", "erreur", "error", ts=0, dedup="boot:1")
+                return super().read()
+
+        reader = Alarming()
+        collector = self.collector([reader])
+        collector.storage.conn.execute("PRAGMA busy_timeout=0")
+        blocker = sqlite3.connect(self.db)
+        self.addCleanup(blocker.close)
+        blocker.execute("BEGIN IMMEDIATE")
+        for _ in range(4):
+            collector.tick()
+        collector.flush([])  # Échec de rejeu : la file doit rester intacte.
+        self.assertTrue(collector.readers[0].enabled)
+        self.assertEqual(collector.readers[0].failures, 0)
+        self.assertEqual(len(collector._event_buffer), 1)
+        blocker.rollback()
+        collector.flush([])
+        self.assertEqual(len(collector._event_buffer), 0)
+        self.assertEqual(collector._event_dedup, set())
+        self.assertEqual(
+            self.query("SELECT ts, dedup FROM events WHERE kind = 'mce'"), [(0, "boot:1")]
+        )
+
+    def test_event_queue_is_bounded_and_deduplicated(self):
+        collector = self.collector([])
+        with mock.patch.object(main_module, "MAX_EVENT_BUFFER", 2), \
+             mock.patch.object(collector.storage, "add_event", side_effect=sqlite3.OperationalError("plein")):
+            for key in ("a", "b"):
+                self.assertTrue(collector._store_event("test", "fault", "warning", "x" * 5000, 1, key))
+            self.assertFalse(collector._store_event("test", "fault", "warning", "x", 1, "b"))
+            self.assertTrue(collector._store_event("test", "fault", "warning", "x", 2, "c"))
+        self.assertEqual(len(collector._event_buffer), 2)
+        self.assertEqual(collector._event_dedup, {"b", "c"})
+        collector.flush([])
+        self.assertEqual(
+            self.query("SELECT dedup, length(message) FROM events WHERE source = 'test' ORDER BY id"),
+            [("b", 4000), ("c", 1)],
+        )
+        self.assertTrue(collector._store_event("test", "fault", "warning", "retry", 1, "a"))
+
+    def test_shutdown_closes_resources_even_when_database_is_unavailable(self):
+        reader = CountingReader()
+        collector = self.collector([reader])
+        with mock.patch.object(collector.storage, "add_event", side_effect=sqlite3.OperationalError("plein")), \
+             mock.patch.object(collector.storage, "insert_samples", side_effect=OSError("plein")), \
+             mock.patch.object(collector.storage, "count_samples", side_effect=sqlite3.OperationalError("erreur")):
+            collector.close([{"ts": 1, "boot_id": "b"}])
+        self.assertTrue(reader.closed)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            collector.storage.conn.execute("SELECT 1")
+        collector.close()  # Un second close est sans effet.
+
     def test_unavailable_and_failed_setup_readers_are_closed(self):
         absent, broken, good = CountingReader(), CountingReader(), CountingReader()
         absent.setup = mock.Mock(return_value=False)
