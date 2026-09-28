@@ -33,6 +33,8 @@ python -m collector.main --db data/metrics.db --period 1.0
 
 `--doctor` describes the sources this machine exposes. `--scan` classifies errors from the current boot without starting continuous database collection. Reader availability depends on the hardware, drivers and permissions; RAPL energy readings may require elevated access.
 
+`--period` and `--duration` accept finite, positive seconds. Duration limits and stop signals interrupt the wait between samples, including with long sampling periods.
+
 Annotate an experiment in a second terminal:
 
 ```bash
@@ -53,7 +55,11 @@ Each reader owns one source, discovers it during setup and returns a dictionary 
 | **Keep labels explicit** | Missing ground truth remains `NULL`; the collector does not guess experiment outcomes. |
 | **Handle cumulative counters** | Convert RAPL energy deltas into power, account for wraparound, and reject implausible reset spikes. |
 | **Recover current-boot events** | Replay available kernel records and deduplicate them before storage. |
+| **Retry failed writes** | Keep pending samples and events in bounded memory queues while SQLite is unavailable. |
+| **Isolate invalid readings** | Replace invalid values with `NULL` and preserve healthy metrics in the same batch. |
 | **Store locally** | A wide time-series table and SQLite WAL suit a single collector without a database server. |
+
+Samples are flushed after 30 new readings or 30 seconds, including when sampling less frequently. Failed batches are retried at these intervals. Each queue holds up to 10,000 entries; saturation drops the oldest entries and logs the loss. Pending data lives in memory, so a forced exit or shutdown during a persistent storage failure can still lose it. Existing databases are migrated automatically while preserving their rows and sensor columns.
 
 ## Data sources
 
@@ -73,7 +79,7 @@ The schema separates **samples**, **boots**, **events** and **labels**. Columns 
 python -m unittest discover -s tests -t .
 ```
 
-The existing suite exercises fake `/proc` and `/sys` trees, sensor discovery, counter wraparound, kernel events, storage and collector failures without requiring the matching hardware.
+The suite exercises fake `/proc` and `/sys` trees, sensor discovery, counter wraparound, kernel events, real SQLite lock contention, legacy migrations, write retries, buffer limits and collection deadlines without requiring the matching hardware.
 
 ## Explore the implementation
 

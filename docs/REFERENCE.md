@@ -140,6 +140,9 @@ information. Columns are added dynamically (`ALTER TABLE ADD COLUMN` is O(1) in
 SQLite), so adding a reader does not break an existing database: older rows
 simply carry `NULL`.
 
+Existing databases are migrated before the current schema creates its indexes.
+Migration keeps recorded samples, events, labels and discovered sensor columns.
+
 | Table       | Role                                                                      |
 |-------------|---------------------------------------------------------------------------|
 | `samples`   | the series, one row per tick, indexed by `(boot_id, ts)`                  |
@@ -151,6 +154,33 @@ simply carry `NULL`.
 > concurrency. In WAL mode, SQLite handles 1 Hz without breaking a sweat and the
 > single file is trivially copied and versioned. Postgres here would be
 > gratuitous complexity.
+
+### Collection reliability
+
+Samples are flushed after 30 new readings or 30 seconds, whichever comes first.
+The flush deadline is independent of the sampling period: with `--period 60`,
+the first sample can be written after 30 seconds without taking another sample.
+On a write failure, the batch stays in memory and retries follow the same
+cadence. Kernel events also queue during storage failures, keeping their original
+timestamps and deduplication keys; a storage failure does not disable a healthy
+reader.
+
+The sample and event queues each hold at most 10,000 entries. Saturation drops
+the oldest entries and logs the loss. These queues are not persisted: an abrupt
+exit loses pending data. Shutdown makes a final write attempt, reports unwritten
+entries, and closes resources even when SQLite is still unavailable.
+
+`--period` and `--duration` must be finite and strictly positive. Duration limits
+and stop signals wake the wait between samples; an in-progress reader or SQLite
+operation must still return before shutdown finishes. Slow reads reschedule the
+next tick instead of generating a burst of catch-up samples.
+
+Invalid metric values (including non-finite numbers, unsupported objects and
+integers outside SQLite's signed 64-bit range) become `NULL`. Healthy fields in
+the same sample remain available. Text fields accept strings or `NULL`; numeric
+fields accept numbers or `NULL`. Per-core columns retain the kernel CPU IDs even
+when the online CPUs are not numbered consecutively. The discovered schema stays
+fixed for the lifetime of the collector.
 
 ## 📊 What each reader collects
 
