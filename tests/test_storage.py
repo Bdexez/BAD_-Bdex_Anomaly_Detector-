@@ -129,8 +129,83 @@ class StorageTest(unittest.TestCase):
         self.assertFalse(migrated.add_event(2, "kmsg", "mce", "error", "x", "k"))
         self.assertEqual(migrated.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], 2)
         self.assertEqual(
-            migrated.conn.execute("SELECT * FROM samples").fetchall(), [(1, "boot", 42.5)]
+            migrated.conn.execute("SELECT ts, boot_id, temperature FROM samples").fetchall(),
+            [(1, "boot", 42.5)],
         )
+
+    def test_same_timestamp_keeps_all_samples_in_and_across_boots(self):
+        self.storage.ensure_columns(["value"])
+        rows = [
+            {"ts": 100, "boot_id": "a", "value": 1.0},
+            {"ts": 100, "boot_id": "a", "value": 2.0},
+            {"ts": 100, "boot_id": "b", "value": 3.0},
+            {"ts": 90, "boot_id": "b", "value": 4.0},
+        ]
+        self.assertEqual(self.storage.insert_samples(rows), 4)
+        self.assertEqual(
+            self.storage.conn.execute("SELECT ts, boot_id, value FROM samples ORDER BY sample_id").fetchall(),
+            [(100, "a", 1.0), (100, "a", 2.0), (100, "b", 3.0), (90, "b", 4.0)],
+        )
+
+    def legacy_samples(self):
+        path = pathlib.Path(self.tmp.name) / "legacy-samples.db"
+        with sqlite3.connect(path) as conn:
+            conn.executescript(
+                "CREATE TABLE samples (ts INTEGER PRIMARY KEY, boot_id TEXT NOT NULL,"
+                " temperature REAL, note TEXT DEFAULT 'unknown');"
+                "CREATE INDEX custom_temperature ON samples(temperature);"
+                "CREATE TABLE audit (ts INTEGER);"
+                "CREATE TRIGGER sample_audit AFTER INSERT ON samples BEGIN"
+                " INSERT INTO audit VALUES (NEW.ts); END;"
+                "INSERT INTO samples (ts, boot_id, temperature, note) VALUES (1, 'boot', 42.5, 'été');"
+            )
+        conn.close()
+        return path
+
+    def test_sample_migration_preserves_types_defaults_indexes_and_triggers(self):
+        path = self.legacy_samples()
+        migrated = Storage(path, SCHEMA)
+        self.addCleanup(migrated.close)
+        columns = {r[1]: r for r in migrated.conn.execute("PRAGMA table_info(samples)")}
+        self.assertEqual(columns["sample_id"][5], 1)
+        self.assertEqual(columns["ts"][5], 0)
+        self.assertEqual(columns["note"][4], "'unknown'")
+        self.assertEqual(columns["temperature"][2], "REAL")
+        migrated.insert_samples([{"ts": 1, "boot_id": "boot", "temperature": 45.0}])
+        self.assertEqual(
+            migrated.conn.execute("SELECT note FROM samples ORDER BY sample_id").fetchall(),
+            [("été",), ("unknown",)],
+        )
+        self.assertIn("custom_temperature", {r[1] for r in migrated.conn.execute("PRAGMA index_list(samples)")})
+        self.assertEqual(migrated.conn.execute("SELECT ts FROM audit").fetchall(), [(1,), (1,)])
+        migrated.close()
+        again = Storage(path, SCHEMA)
+        self.addCleanup(again.close)
+        self.assertEqual(again.count_samples(), 2)
+
+    def test_failed_sample_migration_rolls_back_the_entire_table_rebuild(self):
+        path = self.legacy_samples()
+
+        class FailingConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):
+                if sql.startswith("ALTER TABLE _bad_samples_migration RENAME"):
+                    raise sqlite3.OperationalError("simulated disk failure")
+                return super().execute(sql, *args, **kwargs)
+
+        connection = sqlite3.connect(path, factory=FailingConnection, isolation_level=None)
+        with mock.patch("collector.storage.sqlite3.connect", return_value=connection):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "simulated disk failure"):
+                Storage(path, SCHEMA)
+        with sqlite3.connect(path) as check:
+            self.assertEqual(check.execute("SELECT * FROM samples").fetchall(), [(1, "boot", 42.5, "été")])
+            self.assertEqual(check.execute("PRAGMA table_info(samples)").fetchone()[5], 1)
+            self.assertEqual(
+                check.execute("SELECT name FROM sqlite_master WHERE name='_bad_samples_migration'").fetchall(), []
+            )
+        check.close()
+        recovered = Storage(path, SCHEMA)
+        self.addCleanup(recovered.close)
+        self.assertEqual(recovered.count_samples(), 1)
 
     def test_failed_batch_is_rolled_back_and_connection_is_reusable(self):
         with self.assertRaises(sqlite3.IntegrityError):

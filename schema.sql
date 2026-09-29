@@ -15,9 +15,11 @@ CREATE TABLE IF NOT EXISTS boots (
 -- Les colonnes sont ajoutées dynamiquement par storage.ensure_columns(), donc
 -- ce fichier ne décrit que le squelette invariant.
 CREATE TABLE IF NOT EXISTS samples (
-    ts       INTEGER PRIMARY KEY,   -- epoch ms
+    sample_id INTEGER PRIMARY KEY,
+    ts       INTEGER NOT NULL,      -- epoch ms, plusieurs ticks peuvent coïncider
     boot_id  TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
 -- Presque toutes les requêtes d'analyse sont "cette fenêtre, ce boot" :
 -- sans cet index, filtrer un boot force un scan complet de 1.2M lignes.
 CREATE INDEX IF NOT EXISTS idx_samples_boot ON samples(boot_id, ts);

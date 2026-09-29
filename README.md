@@ -73,6 +73,8 @@ Samples are flushed after 30 new readings or 30 seconds, including when sampling
 
 The schema separates **samples**, **boots**, **events** and **labels**. Columns evolve with discovered readers; unavailable readings remain missing rather than invented values. See [schema.sql](schema.sql) and the [reader catalogue](docs/REFERENCE.md#-what-each-reader-collects).
 
+Each sample has its own `sample_id`; its `ts` remains the original epoch timestamp in milliseconds. Equal timestamps and clock corrections retain every measurement. Older databases receive an atomic, one-time table migration on first use.
+
 ## Verification
 
 ```bash

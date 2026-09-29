@@ -99,6 +99,17 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(kinds, ["start", "stop"])
         self.assertEqual(len(self.query("SELECT boot_id FROM boots")), 1)
 
+    def test_equal_wall_clock_timestamps_do_not_overwrite_ticks(self):
+        reader = CountingReader()
+        collector = self.collector([reader])
+        collector.period = 1.0
+        with self.clock(collector), mock.patch.object(main_module, "now_ms", return_value=1000):
+            collector.run(duration=3.0)
+        self.assertEqual(
+            self.query("SELECT ts, value FROM samples ORDER BY sample_id"),
+            [(1000, 1.0), (1000, 2.0), (1000, 3.0)],
+        )
+
     def test_broken_reader_is_disabled_and_logged_in_events(self):
         good = CountingReader()
         collector = self.collector([good, BrokenReader()])

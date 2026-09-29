@@ -31,6 +31,11 @@ def check_identifier(name: str) -> str:
     return name
 
 
+def quote_identifier(name: str) -> str:
+    """Échappe aussi les identifiants d'une base existante, sans les renommer."""
+    return '"' + name.replace('"', '""') + '"'
+
+
 class Storage:
     def __init__(self, path: str | pathlib.Path, schema: str | pathlib.Path):
         path = pathlib.Path(path)
@@ -56,6 +61,7 @@ class Storage:
         une base de 14 jours ouverte par une version plus récente perdrait la
         déduplication des events sans le dire.
         """
+        self._migrate_samples()
         columns = {r[1] for r in self.conn.execute("PRAGMA table_info(events)")}
         if not columns:
             return
@@ -66,6 +72,49 @@ class Storage:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup"
             " ON events(dedup) WHERE dedup IS NOT NULL"
         )
+
+    def _migrate_samples(self) -> None:
+        """Sépare l'identité d'un sample de l'horloge murale, atomiquement.
+
+        Les anciens ts étaient des clés primaires : deux lectures dans la
+        même milliseconde, ou un retour de l'horloge, écrasaient une mesure.
+        SQLite impose de reconstruire la table pour changer cette contrainte.
+        """
+        columns = self.conn.execute("PRAGMA table_info(samples)").fetchall()
+        if not any(col[1] == "ts" and col[5] for col in columns):
+            return
+        if any(col[1] == "sample_id" for col in columns):
+            raise ValueError("migration impossible: sample_id existe déjà comme métrique")
+
+        definitions = ["sample_id INTEGER PRIMARY KEY"]
+        for _, name, coltype, required, default, _ in columns:
+            definition = f"{quote_identifier(name)} {coltype}"
+            if required or name == "ts":
+                definition += " NOT NULL"
+            if default is not None:
+                definition += f" DEFAULT {default}"
+            definitions.append(definition)
+        names = ", ".join(quote_identifier(col[1]) for col in columns)
+        objects = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE tbl_name = 'samples'"
+            " AND type IN ('index', 'trigger') AND sql IS NOT NULL"
+        ).fetchall()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute(f"CREATE TABLE _bad_samples_migration ({', '.join(definitions)})")
+            self.conn.execute(
+                f"INSERT INTO _bad_samples_migration ({names}) SELECT {names} FROM samples"
+            )
+            self.conn.execute("DROP TABLE samples")
+            self.conn.execute("ALTER TABLE _bad_samples_migration RENAME TO samples")
+            for (sql,) in objects:
+                self.conn.execute(sql)
+            self.conn.execute("COMMIT")
+        except BaseException:
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
+            raise
+        log.info("migration: samples.sample_id remplace ts comme clé primaire")
 
     def _existing_columns(self) -> set[str]:
         rows = self.conn.execute("PRAGMA table_info(samples)").fetchall()
@@ -104,16 +153,16 @@ class Storage:
         """
         if not rows:
             return 0
-        cols = sorted({k for row in rows for k in row} & self._columns)
+        cols = sorted(({k for row in rows for k in row} & self._columns) - {"sample_id"})
         if not cols:
             return 0
-        dropped = {k for row in rows for k in row} - self._columns
+        dropped = {k for row in rows for k in row} - set(cols)
         if dropped:
             log.warning("colonnes inconnues ignorées: %s", ", ".join(sorted(dropped)))
 
         quoted = ",".join(f'"{c}"' for c in cols)
         placeholders = ",".join("?" * len(cols))
-        sql = f"INSERT OR REPLACE INTO samples ({quoted}) VALUES ({placeholders})"
+        sql = f"INSERT INTO samples ({quoted}) VALUES ({placeholders})"
         self.conn.execute("BEGIN")
         try:
             self.conn.executemany(sql, [[row.get(c) for c in cols] for row in rows])

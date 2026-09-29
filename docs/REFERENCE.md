@@ -142,6 +142,11 @@ simply carry `NULL`.
 
 Existing databases are migrated before the current schema creates its indexes.
 Migration keeps recorded samples, events, labels and discovered sensor columns.
+Samples use `sample_id` as their primary key; `ts` stays an indexed epoch timestamp
+in milliseconds. Multiple samples may share a timestamp, including across boots.
+Migrating a database whose `ts` was the primary key rebuilds the table atomically
+once, preserving sensor types, defaults, explicit indexes and triggers. This
+requires temporary disk space for the copied table and its indexes.
 
 | Table       | Role                                                                      |
 |-------------|---------------------------------------------------------------------------|
@@ -391,9 +396,9 @@ Saying them beats pretending.
 - **`top_proc_cpu`** is a percentage of **one** core: 400 % is possible for a
   multithreaded process. Scanning `/proc` costs a few milliseconds per tick over
   ~500 processes.
-- **Timestamps in `epoch ms`, primary key.** Two ticks within the same
-  millisecond overwrite each other. At 1 Hz that is theoretical; with
-  `--period 0.001` it would no longer be.
+- **Wall-clock corrections.** Every reading is retained, even when timestamps
+  repeat or move backwards. `sample_id` preserves insertion order; correlations
+  with experiment windows still depend on the accuracy of the wall clock.
 - **`is_gaming`** rests on a deliberately short list of hints. Each entry is a
   hypothesis about the dataset; that is why the raw value is kept alongside.
 - **iGPU.** `amdgpu_busy_pct` on an iGPU measures a chip that shares its thermal
