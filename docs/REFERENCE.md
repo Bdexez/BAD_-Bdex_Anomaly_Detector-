@@ -267,6 +267,11 @@ can be recomputed at will.
 The compositor is queried through the Hyprland IPC socket (not `hyprctl`, which
 forks) and at most every 5 seconds.
 
+`is_compositing` is also a hint: a busy GPU and a known non-game window produce
+`1`; an unreachable compositor and a busy GPU produce `NULL`. GPU activity alone
+does not prove what is running. `top_proc_cpu` stays `NULL` when no process has a
+comparable previous reading, including after PID reuse.
+
 ## 🧪 Experimental protocols
 
 ### Identifying the 6 `gigabyte_wmi` probes

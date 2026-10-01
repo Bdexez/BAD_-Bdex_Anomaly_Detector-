@@ -173,7 +173,29 @@ class ContextTest(unittest.TestCase):
             reader.read()
             self.add_proc(9, "new", 0, 0, starttime=999)  # même pid, autre process
             out = reader.read()
-        self.assertEqual(out["top_proc_cpu"], 0.0)
+        self.assertIsNone(out["top_proc_cpu"])
+
+    def test_process_name_with_invalid_utf8_does_not_disable_context(self):
+        self.add_proc(7, "worker", 0, 0)
+        stat = self.root / "7" / "stat"
+        stat.write_bytes(stat.read_bytes().replace(b"worker", b"work\xffr"))
+        reader = self.reader()
+        with mock.patch("time.monotonic", side_effect=[0.0, 0.0, 1.0, 1.0]):
+            reader.read()
+            self.add_proc(7, "worker", 10, 0)
+            stat.write_bytes(stat.read_bytes().replace(b"worker", b"work\xffr"))
+            out = reader.read()
+        self.assertEqual(out["n_procs"], 1.0)
+        self.assertEqual(out["top_proc_name"], "work\ufffdr")
+        self.assertGreater(out["top_proc_cpu"], 0.0)
+
+    def test_initial_window_query_is_not_delayed_until_five_seconds_after_boot(self):
+        reader = self.reader()
+        reader._query_window = mock.Mock(return_value="steam_app_42|game")
+        with mock.patch("time.monotonic", return_value=1.0):
+            self.assertEqual(reader.read()["is_gaming"], 1.0)
+            self.assertEqual(reader.read()["is_gaming"], 1.0)
+        reader._query_window.assert_called_once()
 
     def test_is_gaming_flags_known_hints(self):
         self.add_proc(1, "init", 0, 0)
@@ -189,3 +211,14 @@ class ContextTest(unittest.TestCase):
     def test_is_compositing_is_null_without_gpu_counter(self):
         self.add_proc(1, "init", 0, 0)
         self.assertIsNone(self.reader().read()["is_compositing"])
+
+    def test_compositing_hint_preserves_unknown_window_context(self):
+        for window, busy, expected in (
+            (None, 25, None), (None, 0, 0.0),
+            ("kitty|shell", 25, 1.0), ("kitty|shell", 0, 0.0),
+            ("steam_app_42|game", 25, 0.0),
+        ):
+            with self.subTest(window=window, busy=busy):
+                reader = self.reader(window)
+                reader._gpu_busy = write(self.root / "gpu_busy", str(busy))
+                self.assertEqual(reader.read()["is_compositing"], expected)

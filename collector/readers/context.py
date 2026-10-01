@@ -74,7 +74,7 @@ class ContextReader(Reader):
         self._prev_cpu: dict[int, tuple[int, int]] = {}
         self._prev_time: float | None = None
         self._window: str | None = None
-        self._window_at = 0.0
+        self._window_at: float | None = None
         self._gpu_busy: pathlib.Path | None = None
 
     def setup(self) -> bool:
@@ -125,7 +125,7 @@ class ContextReader(Reader):
 
     def _active_window(self) -> str | None:
         now = time.monotonic()
-        if now - self._window_at >= self.WINDOW_TTL:
+        if self._window_at is None or now - self._window_at >= self.WINDOW_TTL:
             self._window = self._query_window()
             self._window_at = now
         return self._window
@@ -142,7 +142,7 @@ class ContextReader(Reader):
                 continue
             count += 1
             try:
-                stat = (entry / "stat").read_text()
+                stat = (entry / "stat").read_text(errors="replace")
             except OSError:
                 continue  # process mort entre iterdir() et read() : normal
             # `comm` est entre parenthèses et peut contenir espaces et
@@ -165,12 +165,13 @@ class ContextReader(Reader):
 
         top_pct, top_name = None, None
         if self._prev_time is not None and (dt := now - self._prev_time) > 0:
-            top_pct = 0.0
             for pid, (jiffies, starttime) in current.items():
                 previous = self._prev_cpu.get(pid)
-                if previous is None or previous[1] != starttime:
+                if previous is None or previous[1] != starttime or jiffies < previous[0]:
                     continue
                 pct = (jiffies - previous[0]) / CLK_TCK / dt * 100.0
+                if top_pct is None:
+                    top_pct = 0.0
                 if pct > top_pct:
                     top_pct, top_name = pct, names.get(pid)
 
@@ -191,7 +192,10 @@ class ContextReader(Reader):
         busy = registry.read_int(self._gpu_busy) if self._gpu_busy else None
         is_compositing: float | None = None
         if busy is not None:
-            is_compositing = float(busy > 0 and is_gaming != 1.0)
+            if busy == 0 or is_gaming == 1.0:
+                is_compositing = 0.0
+            elif is_gaming == 0.0:
+                is_compositing = 1.0
 
         uptime = registry.read_text(self.proc_root / "uptime")
         try:
