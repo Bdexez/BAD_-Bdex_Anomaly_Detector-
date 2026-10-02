@@ -68,6 +68,8 @@ class ContextReader(Reader):
 
     #: secondes entre deux interrogations du compositeur
     WINDOW_TTL = 5.0
+    WINDOW_TIMEOUT = 0.2
+    MAX_WINDOW_BYTES = 64 * 1024
 
     def __init__(self, proc_root: pathlib.Path = pathlib.Path("/proc")):
         self.proc_root = proc_root
@@ -98,29 +100,60 @@ class ContextReader(Reader):
         """Le daemon tourne en root : il n'hérite ni de HYPRLAND_INSTANCE_SIGNATURE
         ni de XDG_RUNTIME_DIR. On retrouve donc la socket par le système de fichiers."""
         runtime = os.environ.get("XDG_RUNTIME_DIR")
-        roots = [pathlib.Path(runtime)] if runtime else list(pathlib.Path("/run/user").glob("*"))
-        sockets = [s for root in roots for s in root.glob("hypr/*/.socket.sock")]
-        return sorted(sockets, key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+        try:
+            roots = [pathlib.Path(runtime)] if runtime else list(pathlib.Path("/run/user").glob("*"))
+        except OSError:
+            return []
+        sockets = []
+        for root in roots:
+            try:
+                for path in root.glob("hypr/*/.socket.sock"):
+                    try:
+                        sockets.append((path.stat().st_mtime, path))
+                    except OSError:
+                        continue  # session disparue pendant la découverte
+            except OSError:
+                continue
+        return [path for _, path in sorted(sockets, reverse=True)]
 
     def _query_window(self) -> str | None:
+        deadline = time.monotonic() + self.WINDOW_TIMEOUT
+
+        def remaining() -> float:
+            delay = deadline - time.monotonic()
+            if delay <= 0:
+                raise TimeoutError("délai de réponse du compositeur dépassé")
+            return delay
+
         for sock_path in self._hypr_sockets():
             try:
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                    sock.settimeout(0.2)
+                    sock.settimeout(remaining())
                     sock.connect(str(sock_path))
+                    sock.settimeout(remaining())
                     sock.sendall(b"j/activewindow")
-                    chunks = []
-                    while chunk := sock.recv(8192):
-                        chunks.append(chunk)
-            except OSError:
+                    payload = bytearray()
+                    while True:
+                        sock.settimeout(remaining())
+                        chunk = sock.recv(8192)
+                        if not chunk:
+                            break
+                        payload.extend(chunk)
+                        if len(payload) > self.MAX_WINDOW_BYTES:
+                            raise ValueError("réponse du compositeur trop volumineuse")
+            except (OSError, ValueError):
                 continue
             try:
-                window = json.loads(b"".join(chunks) or b"{}")
-            except json.JSONDecodeError:
+                window = json.loads(payload)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(window, dict):
                 continue
             if not window:
                 return ""  # session vivante, mais aucune fenêtre focalisée
-            return f"{window.get('class', '')}|{window.get('title', '')}"
+            app, title = window.get("class", ""), window.get("title", "")
+            if isinstance(app, str) and isinstance(title, str):
+                return f"{app}|{title}"
         return None
 
     def _active_window(self) -> str | None:

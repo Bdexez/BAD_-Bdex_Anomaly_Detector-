@@ -266,6 +266,9 @@ can be recomputed at will.
 
 The compositor is queried through the Hyprland IPC socket (not `hyprctl`, which
 forks) and at most every 5 seconds.
+The optional IPC request has a total 200 ms deadline and a 64 KiB response limit.
+Missing sockets and malformed replies leave the window context unknown while
+the other context metrics keep working.
 
 `is_compositing` is also a hint: a busy GPU and a known non-game window produce
 `1`; an unreachable compositor and a busy GPU produce `NULL`. GPU activity alone
