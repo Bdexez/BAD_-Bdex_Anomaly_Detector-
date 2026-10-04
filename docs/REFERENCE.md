@@ -94,7 +94,12 @@ python -m collector.label start airflow_blocked -n "front intake blocked"
 # ... the experiment runs ...
 python -m collector.label end
 python -m collector.label list
+python -m collector.label list --all  # include completed experiments and notes
 ```
+
+Labels must contain a non-whitespace name. A window may end at its start, but
+cannot end before it; closing all open windows is atomic. `list` and `end` reject
+a missing database instead of creating an empty one after a path typo.
 
 ### Tests
 

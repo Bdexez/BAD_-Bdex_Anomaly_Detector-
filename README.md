@@ -41,9 +41,12 @@ Annotate an experiment in a second terminal:
 python -m collector.label start baseline -n "normal cooling, usual workload"
 python -m collector.label end
 python -m collector.label list
+python -m collector.label list --all
 ```
 
 For unattended collection, see the [systemd unit](systemd/bad-collector.service). Optional NVIDIA support uses `nvidia-ml-py`; the rest of the collector can run with the standard library.
+
+`label list --all` includes completed experiments, their boundaries and notes. Empty labels and end times before the start are rejected. Ending several windows validates them together, so an invalid time closes none of them.
 
 ## Design
 

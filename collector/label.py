@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import pathlib
+import sqlite3
 
 from .main import SCHEMA, now_ms
 from .storage import Storage
@@ -53,11 +54,22 @@ def main() -> None:
     end = sub.add_parser("end", help="fermer une fenêtre (toutes si id omis)")
     end.add_argument("id", nargs="?", type=int)
 
-    sub.add_parser("list", help="lister les fenêtres ouvertes")
+    listing = sub.add_parser("list", help="lister les fenêtres ouvertes")
+    listing.add_argument("--all", action="store_true", help="inclure les fenêtres terminées")
 
     args = ap.parse_args()
-    storage = Storage(args.db, args.schema)
+    if args.command == "start":
+        args.label = args.label.strip()
+        if not args.label:
+            ap.error("le label ne peut pas être vide")
+    else:
+        if not pathlib.Path(args.db).is_file():
+            ap.error(f"base introuvable: {args.db}")
+        if args.command == "end" and args.id is not None and args.id <= 0:
+            ap.error("l'identifiant du label doit être > 0")
+    storage = None
     try:
+        storage = Storage(args.db, args.schema)
         if args.command == "start":
             if args.label not in KNOWN_LABELS:
                 print(f"note: '{args.label}' hors liste ({', '.join(KNOWN_LABELS)})")
@@ -67,13 +79,16 @@ def main() -> None:
             closed = storage.end_label(now_ms(), args.id)
             print(f"{closed} label(s) fermé(s)")
         else:
-            rows = storage.open_labels()
+            rows = storage.list_labels(include_closed=args.all)
             if not rows:
-                print("aucun label ouvert")
+                print("aucun label" if args.all else "aucun label ouvert")
             for row in rows:
-                print(f"#{row[0]}  {human(row[1])}  {row[2]}  {row[3]}")
+                print(f"#{row[0]}  {human(row[1])} → {human(row[2])}  {row[3]}  {row[4]}")
+    except (ValueError, OSError, sqlite3.Error) as exc:
+        ap.error(str(exc))
     finally:
-        storage.close()
+        if storage is not None:
+            storage.close()
 
 
 if __name__ == "__main__":

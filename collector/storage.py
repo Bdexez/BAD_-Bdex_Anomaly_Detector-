@@ -213,6 +213,9 @@ class Storage:
     # -- labels : l'annotation manuelle des expériences ---------------------
 
     def start_label(self, ts: int, label: str, notes: str = "") -> int:
+        label = label.strip()
+        if not label:
+            raise ValueError("le label ne peut pas être vide")
         cur = self.conn.execute(
             "INSERT INTO labels (ts_start, label, notes) VALUES (?, ?, ?)",
             (ts, label, notes),
@@ -221,16 +224,37 @@ class Storage:
 
     def end_label(self, ts: int, label_id: int | None = None) -> int:
         """Ferme un label ouvert (ou tous les labels ouverts si id absent)."""
-        if label_id is None:
+        if label_id is not None and label_id <= 0:
+            raise ValueError("l'identifiant du label doit être > 0")
+        where = "ts_end IS NULL"
+        params: tuple = ()
+        if label_id is not None:
+            where += " AND id = ?"
+            params = (label_id,)
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            invalid = self.conn.execute(
+                f"SELECT id FROM labels WHERE {where} AND ts_start > ? LIMIT 1",
+                (*params, ts),
+            ).fetchone()
+            if invalid is not None:
+                raise ValueError(f"la fin précède le début du label #{invalid[0]}")
             cur = self.conn.execute(
-                "UPDATE labels SET ts_end = ? WHERE ts_end IS NULL", (ts,)
+                f"UPDATE labels SET ts_end = ? WHERE {where}", (ts, *params)
             )
-        else:
-            cur = self.conn.execute(
-                "UPDATE labels SET ts_end = ? WHERE id = ? AND ts_end IS NULL",
-                (ts, label_id),
-            )
-        return cur.rowcount
+            self.conn.execute("COMMIT")
+            return cur.rowcount
+        except BaseException:
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
+            raise
+
+    def list_labels(self, include_closed: bool = False) -> list[tuple]:
+        where = "" if include_closed else " WHERE ts_end IS NULL"
+        return self.conn.execute(
+            "SELECT id, ts_start, ts_end, label, notes FROM labels" + where
+            + " ORDER BY ts_start, id"
+        ).fetchall()
 
     def open_labels(self) -> list[sqlite3.Row]:
         cur = self.conn.execute(
