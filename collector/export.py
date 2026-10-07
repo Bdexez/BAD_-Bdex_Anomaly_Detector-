@@ -16,6 +16,11 @@ from .storage import quote_identifier
 def export_csv(
     db: str | pathlib.Path,
     target: TextIO,
+    *,
+    boot_id: str | None = None,
+    since: int | None = None,
+    until: int | None = None,
+    columns: Sequence[str] | None = None,
 ) -> int:
     """Écrit une ligne par mesure, en flux, depuis un snapshot SQLite cohérent.
 
@@ -23,22 +28,41 @@ def export_csv(
     qui se chevauchent, leurs notes et leurs bornes ; [] n'invente aucun label.
     Les anciennes bases sont lisibles sans déclencher leur migration.
     """
+    if since is not None and until is not None and until <= since:
+        raise ValueError("--until doit être supérieur à --since")
     uri = pathlib.Path(db).resolve().as_uri() + "?mode=ro"
     with closing(sqlite3.connect(uri, uri=True, isolation_level=None)) as conn:
         conn.execute("BEGIN")
         fields = conn.execute("PRAGMA table_info(samples)").fetchall()
         available = [field[1] for field in fields]
-        selected = available
+        selected = available if columns is None else list(columns)
+        if not selected:
+            raise ValueError("aucune colonne de mesures à exporter")
+        unknown = set(selected) - set(available)
+        if unknown:
+            raise ValueError(f"colonnes inconnues: {', '.join(sorted(unknown))}")
+        if len(set(selected)) != len(selected) or "labels_json" in selected:
+            raise ValueError("colonnes dupliquées ou nom réservé: labels_json")
         primary = [field[1] for field in fields if field[5]]
         if len(primary) != 1:
             raise ValueError("la table samples doit avoir une clé primaire unique")
         key = f"s.{quote_identifier(primary[0])}"
         projection = ", ".join(f"s.{quote_identifier(field)}" for field in selected)
+        filters = []
+        params: list[str | int] = []
+        for value, condition in (
+            (boot_id, "s.boot_id = ?"), (since, "s.ts >= ?"), (until, "s.ts < ?"),
+        ):
+            if value is not None:
+                filters.append(condition)
+                params.append(value)
+        where = " WHERE " + " AND ".join(filters) if filters else ""
         cursor = conn.execute(
             f"SELECT {key}, {projection}, l.id, l.ts_start, l.ts_end, l.label, l.notes"
             " FROM samples AS s LEFT JOIN labels AS l"
             " ON l.ts_start <= s.ts AND (l.ts_end IS NULL OR s.ts < l.ts_end)"
-            + f" ORDER BY s.ts, {key}, l.id",
+            + where + f" ORDER BY s.ts, {key}, l.id",
+            params,
         )
         writer = csv.writer(target, lineterminator="\n")
         writer.writerow([*selected, "labels_json"])

@@ -58,7 +58,24 @@ class ExportTest(unittest.TestCase):
             "ts_start": 100, "ts_end": 200,
         }])
 
+    def test_filters_boot_time_range_and_selected_column_order(self):
+        self.storage.insert_samples([
+            {"ts": 100, "boot_id": "a"}, {"ts": 150, "boot_id": "a"},
+            {"ts": 150, "boot_id": "b"}, {"ts": 200, "boot_id": "a"},
+        ])
+        rows = self.export(boot_id="a", since=100, until=200, columns=["boot_id", "ts"])
+        self.assertEqual(list(rows[0]), ["boot_id", "ts", "labels_json"])
+        self.assertEqual([row["ts"] for row in rows], ["100", "150"])
 
+    def test_invalid_columns_and_ranges_produce_no_partial_output(self):
+        for options in ({"columns": ["missing"]}, {"columns": ["ts; DROP TABLE samples"]},
+                        {"columns": []}, {"columns": ["ts", "ts"]},
+                        {"since": 100, "until": 100}, {"since": 200, "until": 100}):
+            with self.subTest(options=options):
+                output = io.StringIO()
+                with self.assertRaises(ValueError):
+                    export_csv(self.db, output, **options)
+                self.assertEqual(output.getvalue(), "")
 
     def test_missing_database_is_not_created(self):
         missing = self.db.parent / "missing.db"
