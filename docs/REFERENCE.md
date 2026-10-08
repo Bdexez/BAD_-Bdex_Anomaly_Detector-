@@ -32,6 +32,7 @@ of first.
   - [Tests](#tests)
 - [Layout](#-layout)
 - [Data model](#-data-model)
+- [Exporting data](#exporting-data)
 - [What each reader collects](#-what-each-reader-collects)
 - [Context](#-context-or-why-this-is-not-a-kaggle-notebook)
 - [Experimental protocols](#-experimental-protocols)
@@ -120,6 +121,7 @@ collector/
 ├─ registry.py        sysfs resolution (hwmon by name, tolerant reads)
 ├─ errors.py          CATALOGUE of detectable errors (data, not code)
 ├─ label.py           experiment annotation CLI
+├─ export.py          read-only streaming CSV export with experiment labels
 └─ readers/
    ├─ base.py         Reader contract + ReaderState (failures, event channel)
    ├─ kmsg.py         kernel errors (/dev/kmsg or journalctl)
@@ -191,6 +193,37 @@ the same sample remain available. Text fields accept strings or `NULL`; numeric
 fields accept numbers or `NULL`. Per-core columns retain the kernel CPU IDs even
 when the online CPUs are not numbered consecutively. The discovered schema stays
 fixed for the lifetime of the collector.
+
+### Exporting data
+
+```bash
+python -m collector.export --db data/metrics.db --output data/dataset.csv
+python -m collector.export --db data/metrics.db --boot BOOT_ID \
+  --since 1794300000000 --until 1794386400000 \
+  --columns sample_id ts cpu_util mem_used_mb
+```
+
+The CSV contains the selected columns, followed by `labels_json`. By default,
+all sample columns are included. `NULL` metrics become empty cells. Text is
+quoted by the CSV encoder, including commas, quotes, newlines and Unicode.
+
+`labels_json` is an array of objects with `id`, `label`, `notes`, `ts_start` and
+`ts_end`. All overlapping experiment windows are preserved without duplicating
+sample rows. A label applies on `[ts_start, ts_end)`; an open window has no upper
+bound. No matching annotation produces `[]`, never an inferred `normal` label.
+The range filters follow the same inclusive/exclusive convention.
+
+Output is ordered by timestamp and sample identity. It is read from one SQLite
+snapshot, so changes to samples or labels during export do not mix different
+database states. Rows stream to the destination; Python does not load the whole
+dataset into memory. Old databases are read without migration. The exporter
+requires no third-party dependencies or SQLite JSON extension.
+
+Without `--output`, CSV goes to stdout and the row count to stderr. A named
+destination must be a new file; existing files, including the source database,
+are never overwritten. Failed exports and Ctrl+C remove the file created by
+that invocation. A long-running snapshot can keep the collector's WAL file
+from shrinking until the export finishes.
 
 ## 📊 What each reader collects
 

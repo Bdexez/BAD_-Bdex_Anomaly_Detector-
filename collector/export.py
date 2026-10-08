@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Sequence
-from contextlib import closing
+from contextlib import closing, contextmanager
 import csv
 import json
 import pathlib
 import sqlite3
+import sys
 from typing import TextIO
 
 from .storage import quote_identifier
@@ -90,3 +92,43 @@ def export_csv(
             write_sample()
             count += 1
         return count
+
+
+@contextmanager
+def _output(destination: str):
+    if destination == "-":
+        yield sys.stdout
+        return
+    path = pathlib.Path(destination)
+    stream = path.open("x", encoding="utf-8", newline="")
+    try:
+        with stream:
+            yield stream
+    except BaseException:
+        # Seul le fichier créé par cet appel est supprimé en cas d'échec.
+        # Un export partiel ne doit pas passer pour un dataset complet.
+        path.unlink(missing_ok=True)
+        raise
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Exporter les mesures et leurs labels en CSV")
+    parser.add_argument("--db", default="data/metrics.db", help="base SQLite existante, ouverte en lecture seule")
+    parser.add_argument("--output", default="-", help="nouveau fichier CSV, ou - pour stdout (défaut)")
+    parser.add_argument("--boot", dest="boot_id", help="limiter à un boot_id")
+    parser.add_argument("--since", type=int, help="epoch ms inclusif")
+    parser.add_argument("--until", type=int, help="epoch ms exclusif")
+    parser.add_argument("--columns", nargs="+", help="colonnes à exporter, dans l'ordre choisi")
+    args = parser.parse_args(argv)
+    try:
+        with _output(args.output) as target:
+            count = export_csv(args.db, target, boot_id=args.boot_id, since=args.since,
+                               until=args.until, columns=args.columns)
+            target.flush()
+    except (ValueError, OSError, sqlite3.Error) as exc:
+        parser.error(f"export impossible: {exc}")
+    print(f"{count} mesure(s) exportée(s)", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
