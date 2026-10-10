@@ -83,24 +83,29 @@ class Storage:
         columns = self.conn.execute("PRAGMA table_info(samples)").fetchall()
         if not any(col[1] == "ts" and col[5] for col in columns):
             return
-        if any(col[1] == "sample_id" for col in columns):
-            raise ValueError("migration impossible: sample_id existe déjà comme métrique")
-
-        definitions = ["sample_id INTEGER PRIMARY KEY"]
-        for _, name, coltype, required, default, _ in columns:
-            definition = f"{quote_identifier(name)} {coltype}"
-            if required or name == "ts":
-                definition += " NOT NULL"
-            if default is not None:
-                definition += f" DEFAULT {default}"
-            definitions.append(definition)
-        names = ", ".join(quote_identifier(col[1]) for col in columns)
-        objects = self.conn.execute(
-            "SELECT sql FROM sqlite_master WHERE tbl_name = 'samples'"
-            " AND type IN ('index', 'trigger') AND sql IS NOT NULL"
-        ).fetchall()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
+            # Un autre démarrage a pu migrer la base pendant l'attente du
+            # verrou : ne jamais reconstruire depuis des métadonnées périmées.
+            columns = self.conn.execute("PRAGMA table_info(samples)").fetchall()
+            if not any(col[1] == "ts" and col[5] for col in columns):
+                self.conn.execute("COMMIT")
+                return
+            if any(col[1] == "sample_id" for col in columns):
+                raise ValueError("migration impossible: sample_id existe déjà comme métrique")
+            definitions = ["sample_id INTEGER PRIMARY KEY"]
+            for _, name, coltype, required, default, _ in columns:
+                definition = f"{quote_identifier(name)} {coltype}"
+                if required or name == "ts":
+                    definition += " NOT NULL"
+                if default is not None:
+                    definition += f" DEFAULT {default}"
+                definitions.append(definition)
+            names = ", ".join(quote_identifier(col[1]) for col in columns)
+            objects = self.conn.execute(
+                "SELECT sql FROM sqlite_master WHERE tbl_name = 'samples'"
+                " AND type IN ('index', 'trigger') AND sql IS NOT NULL"
+            ).fetchall()
             self.conn.execute(f"CREATE TABLE _bad_samples_migration ({', '.join(definitions)})")
             self.conn.execute(
                 f"INSERT INTO _bad_samples_migration ({names}) SELECT {names} FROM samples"

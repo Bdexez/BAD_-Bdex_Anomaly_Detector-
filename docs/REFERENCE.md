@@ -154,6 +154,8 @@ in milliseconds. Multiple samples may share a timestamp, including across boots.
 Migrating a database whose `ts` was the primary key rebuilds the table atomically
 once, preserving sensor types, defaults, explicit indexes and triggers. This
 requires temporary disk space for the copied table and its indexes.
+The schema is rechecked under the write lock, so competing startups cannot
+rebuild a table from an outdated list of sensor columns.
 
 | Table       | Role                                                                      |
 |-------------|---------------------------------------------------------------------------|

@@ -207,6 +207,36 @@ class StorageTest(unittest.TestCase):
         self.addCleanup(recovered.close)
         self.assertEqual(recovered.count_samples(), 1)
 
+    def test_competing_migration_cannot_drop_a_new_sensor_column(self):
+        path = self.legacy_samples()
+        connect = sqlite3.connect
+
+        class RacingConnection(sqlite3.Connection):
+            raced = False
+
+            def execute(self, sql, *args, **kwargs):
+                if sql == "BEGIN IMMEDIATE" and not self.raced:
+                    self.raced = True
+                    # Un second processus migre et ajoute un capteur entre
+                    # notre découverte initiale et notre prise du verrou.
+                    competing = Storage.__new__(Storage)
+                    competing.conn = connect(path, isolation_level=None)
+                    try:
+                        competing._migrate_samples()
+                        competing._columns = competing._existing_columns()
+                        competing.ensure_columns(["new_sensor"])
+                        competing.insert_samples([{"ts": 2, "boot_id": "boot", "new_sensor": 99.0}])
+                    finally:
+                        competing.close()
+                return super().execute(sql, *args, **kwargs)
+
+        connection = connect(path, factory=RacingConnection, isolation_level=None)
+        with mock.patch("collector.storage.sqlite3.connect", return_value=connection):
+            migrated = Storage(path, SCHEMA)
+        self.addCleanup(migrated.close)
+        self.assertEqual(migrated.conn.execute("SELECT new_sensor FROM samples ORDER BY ts").fetchall(),
+                         [(None,), (99.0,)])
+
     def test_failed_batch_is_rolled_back_and_connection_is_reusable(self):
         with self.assertRaises(sqlite3.IntegrityError):
             self.storage.insert_samples([{"ts": 1, "boot_id": "b"}, {"ts": 2}])
