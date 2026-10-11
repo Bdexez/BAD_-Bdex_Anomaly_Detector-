@@ -151,9 +151,14 @@ class ContextReader(Reader):
                 continue
             if not window:
                 return ""  # session vivante, mais aucune fenêtre focalisée
-            app, title = window.get("class", ""), window.get("title", "")
+            app, title = window.get("class"), window.get("title")
             if isinstance(app, str) and isinstance(title, str):
-                return f"{app}|{title}"
+                text = f"{app}|{title}"
+                try:
+                    text.encode("utf-8")
+                except UnicodeEncodeError:
+                    continue
+                return text
         return None
 
     def _active_window(self) -> str | None:

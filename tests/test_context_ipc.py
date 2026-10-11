@@ -31,7 +31,9 @@ class ContextIpcTest(unittest.TestCase):
 
     def test_invalid_responses_remain_unknown(self):
         for payload in (b"", b"[]", b"null", b"false", b'""', b"0", b"{", b"\xff",
-                        b'{"class":null}', b'{"title":42}'):
+                        b'{"class":null}', b'{"title":42}', b'{"other":1}',
+                        b'{"class":"kitty"}', b'{"title":"shell"}',
+                        b'{"class":"kitty","title":"\\ud800"}'):
             with self.subTest(payload=payload):
                 self.assertIsNone(self.query([payload, b""])[0])
 
