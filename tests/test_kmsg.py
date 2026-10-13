@@ -129,7 +129,9 @@ class KmsgParsingTest(unittest.TestCase):
         self.assertEqual(self.parse("27,1,0,-;erreur").level, 3)
 
     def test_malformed_records_are_dropped(self):
-        for raw in ("pas de point-virgule", "a,b,c;texte", "6;texte"):
+        for raw in ("pas de point-virgule", "a,b,c;texte", "6;texte", "6,1,0",
+                    "6,x,0;texte", "-1,1,0;texte", "6,-1,0;texte", "6,1,-1;texte",
+                    f"6,1,{2**64};texte"):
             with self.subTest(raw=raw):
                 self.assertIsNone(self.parse(raw))
 
@@ -157,3 +159,34 @@ class JournalParsingTest(unittest.TestCase):
     def test_garbage_lines_are_dropped(self):
         self.assertIsNone(_JournalBackend._parse(b"pas du json"))
         self.assertIsNone(_JournalBackend._parse(b"{}"))
+
+    def test_json_values_that_are_not_objects_are_ignored(self):
+        for entry in (None, [], [1], 42, True, "message"):
+            with self.subTest(entry=entry):
+                self.assertIsNone(_JournalBackend._parse(json.dumps(entry).encode()))
+
+    def test_invalid_binary_messages_are_ignored(self):
+        for message in ([256], [-1], ["x"], [None], [{}], [True]):
+            with self.subTest(message=message):
+                line = json.dumps({"MESSAGE": message, "__REALTIME_TIMESTAMP": "1000"}).encode()
+                self.assertIsNone(_JournalBackend._parse(line))
+
+    def test_invalid_metadata_does_not_reach_storage(self):
+        for key, value in (
+            ("__REALTIME_TIMESTAMP", None), ("__REALTIME_TIMESTAMP", "bad"),
+            ("__REALTIME_TIMESTAMP", -1), ("__REALTIME_TIMESTAMP", True),
+            ("__REALTIME_TIMESTAMP", 1.5), ("PRIORITY", -1), ("PRIORITY", 8),
+            ("__REALTIME_TIMESTAMP", str(2**80)),
+            ("PRIORITY", []), ("PRIORITY", True), ("__CURSOR", []),
+            ("__CURSOR", {}), ("__CURSOR", ""), ("MESSAGE", "\ud800"),
+        ):
+            with self.subTest(key=key, value=value):
+                entry = {"MESSAGE": "panic", "__REALTIME_TIMESTAMP": "1000", "PRIORITY": "3"}
+                entry[key] = value
+                self.assertIsNone(_JournalBackend._parse(json.dumps(entry).encode()))
+
+    def test_missing_timestamp_is_not_invented_as_epoch_zero(self):
+        self.assertIsNone(_JournalBackend._parse(b'{"MESSAGE":"panic"}'))
+        rec = _JournalBackend._parse(b'{"MESSAGE":"panic","__REALTIME_TIMESTAMP":"0"}')
+        self.assertEqual(rec.ts_ms, 0)
+        self.assertIsNone(rec.dedup)

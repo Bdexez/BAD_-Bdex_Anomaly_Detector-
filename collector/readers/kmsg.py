@@ -54,7 +54,7 @@ class Record(NamedTuple):
     ts_ms: int
     level: int
     text: str
-    dedup: str
+    dedup: str | None
 
 
 def _boot_epoch_ms() -> float:
@@ -104,13 +104,15 @@ class _KmsgBackend:
 
     def _parse(self, raw: str) -> Record | None:
         # "priorité,séquence,horodatage_us,drapeau;texte\n clé=valeur..."
-        prefix, _, rest = raw.partition(";")
+        prefix, separator, rest = raw.partition(";")
         parts = prefix.split(",")
-        if len(parts) < 3:
+        if not separator or len(parts) < 3:
             return None
         try:
-            priority, sequence, ts_us = int(parts[0]), parts[1], int(parts[2])
+            priority, sequence, ts_us = int(parts[0]), int(parts[1]), int(parts[2])
         except ValueError:
+            return None
+        if min(priority, sequence, ts_us) < 0 or ts_us > 2**63 - 1:
             return None
         text = rest.split("\n", 1)[0].strip()
         return Record(
@@ -180,18 +182,30 @@ class _JournalBackend:
             entry = json.loads(line)
         except (json.JSONDecodeError, UnicodeDecodeError):
             return None
+        if not isinstance(entry, dict):
+            return None
         message = entry.get("MESSAGE")
         if isinstance(message, list):  # journald encode le binaire en liste d'octets
+            if not all(type(value) is int and 0 <= value <= 255 for value in message):
+                return None
             message = bytes(message).decode("utf-8", "replace")
-        if not isinstance(message, str):
+        if not isinstance(message, str) or not message.strip():
             return None
         try:
-            ts_ms = int(entry.get("__REALTIME_TIMESTAMP", 0)) // 1000
-            level = int(entry.get("PRIORITY", 6))
-        except (TypeError, ValueError):
+            message.encode("utf-8")
+            timestamp = entry["__REALTIME_TIMESTAMP"]
+            priority = entry.get("PRIORITY", 6)
+            if type(timestamp) not in (str, int) or type(priority) not in (str, int):
+                return None
+            ts_us, level = int(timestamp), int(priority)
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not 0 <= ts_us // 1000 < 2**63 or not 0 <= level <= 7:
             return None
         cursor = entry.get("__CURSOR")
-        return Record(ts_ms=ts_ms, level=level, text=message.strip(), dedup=cursor)
+        if cursor is not None and (not isinstance(cursor, str) or not cursor):
+            return None
+        return Record(ts_ms=ts_us // 1000, level=level, text=message.strip(), dedup=cursor)
 
     def backfill(self) -> Iterator[Record]:
         """Relit le boot courant via un process qui se termine.

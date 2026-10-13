@@ -371,6 +371,10 @@ Two sources, chosen at startup:
 Neither forks per tick: `/dev/kmsg` is a descriptor opened once, `journalctl` a
 single process for the daemon's whole life.
 
+Malformed journal records are skipped individually: unexpected JSON types,
+invalid binary messages, timestamps, priorities and deduplication cursors cannot
+disable the kernel reader. A missing timestamp is never replaced by epoch zero.
+
 > 🔁 **Startup replays the entire buffer of the current boot.** Errors that
 > occurred before the collector was launched — at boot, or while the service was
 > stopped — are recovered with their original timestamp. The deduplication key
