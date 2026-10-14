@@ -41,6 +41,8 @@ KMSG_PATH = pathlib.Path("/dev/kmsg")
 #: dans la métrique et résumé en un seul événement.
 MAX_RECORDS_PER_TICK = 2000
 MAX_EVENTS_PER_TICK = 50
+MAX_JOURNAL_READ_BYTES = 256 * 1024
+MAX_JOURNAL_BUFFER_BYTES = 8 * 1024 * 1024
 
 #: Le rejeu est une opération bornée et distincte du suivi : on lit jusqu'à
 #: épuisement de la source, pas jusqu'à un silence supposé. `journalctl -f`
@@ -151,30 +153,59 @@ class _JournalBackend:
             stderr=subprocess.DEVNULL,
             close_fds=True,
         )
-        os.set_blocking(self.proc.stdout.fileno(), False)
+        self._closed = False
         self._buffer = b""
+        self._eof = False
+        self._discard_line = False
+        self._overrun_logged = False
+        try:
+            os.set_blocking(self.proc.stdout.fileno(), False)
+        except BaseException:
+            self.close()
+            raise
 
     def records(self, limit: int) -> Iterator[Record]:
-        if self.proc.poll() is not None:
-            raise OSError(f"journalctl s'est arrêté (code {self.proc.returncode})")
-        while True:
+        if limit <= 0:
+            return
+        received = 0
+        while not self._eof and received < MAX_JOURNAL_READ_BYTES:
             try:
-                chunk = self.proc.stdout.read(65536)
+                chunk = self.proc.stdout.read(min(65536, MAX_JOURNAL_READ_BYTES - received))
             except BlockingIOError:
                 chunk = None
-            if not chunk:
+            if chunk is None:
                 break
+            if not chunk:
+                self._eof = True
+                break
+            received += len(chunk)
+            if self._discard_line:
+                _, separator, chunk = chunk.partition(b"\n")
+                if not separator:
+                    continue
+                self._discard_line = False
             self._buffer += chunk
-            if len(self._buffer) > 8 << 20:  # garde-fou : 8 Mo de retard
-                self._buffer = self._buffer[-(1 << 20):]
+            if len(self._buffer) > MAX_JOURNAL_BUFFER_BYTES:
+                cut = self._buffer.find(b"\n", len(self._buffer) - MAX_JOURNAL_BUFFER_BYTES)
+                self._discard_line = cut < 0
+                self._buffer = b"" if cut < 0 else self._buffer[cut + 1:]
+                if not self._overrun_logged:
+                    log.warning("buffer journald saturé, messages anciens abandonnés")
+                    self._overrun_logged = True
 
-        count = 0
-        while count < limit and b"\n" in self._buffer:
-            line, _, self._buffer = self._buffer.partition(b"\n")
+        # Le budget porte aussi sur les lignes invalides, et split évite de
+        # recopier le buffer entier à chaque message d'une rafale.
+        lines = self._buffer.split(b"\n", limit)
+        self._buffer = lines.pop()
+        if self._eof and len(lines) < limit and self._buffer:
+            lines.append(self._buffer)
+            self._buffer = b""
+        for line in lines:
             record = self._parse(line)
             if record is not None:
-                count += 1
                 yield record
+        if not lines and self._eof and self.proc.poll() is not None:
+            raise OSError(f"journalctl s'est arrêté (code {self.proc.returncode})")
 
     @staticmethod
     def _parse(line: bytes) -> Record | None:
@@ -229,12 +260,22 @@ class _JournalBackend:
                 yield record
 
     def close(self) -> None:
-        self.proc.terminate()
+        if self._closed:
+            return
+        self._closed = True
         try:
-            self.proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-        self.proc.stdout.close()
+            if self.proc.poll() is None:
+                try:
+                    self.proc.terminate()
+                except ProcessLookupError:
+                    pass
+                try:
+                    self.proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait(timeout=2)
+        finally:
+            self.proc.stdout.close()
 
 
 class KmsgReader(Reader):

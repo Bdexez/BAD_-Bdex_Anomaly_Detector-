@@ -374,6 +374,10 @@ single process for the daemon's whole life.
 Malformed journal records are skipped individually: unexpected JSON types,
 invalid binary messages, timestamps, priorities and deduplication cursors cannot
 disable the kernel reader. A missing timestamp is never replaced by epoch zero.
+Live journal reads consume at most 256 KiB and 2,000 physical lines per tick,
+including malformed lines. The pending buffer is limited to 8 MiB; overflow
+drops old complete lines and logs the loss. Final buffered messages are drained
+before an exited journal process is reported as unavailable.
 
 > 🔁 **Startup replays the entire buffer of the current boot.** Errors that
 > occurred before the collector was launched — at boot, or while the service was
