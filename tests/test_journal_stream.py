@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -93,3 +94,34 @@ class JournalStreamTest(unittest.TestCase):
         proc.terminate.assert_called_once()
         proc.wait.assert_called_once()
         proc.stdout.close.assert_called_once()
+
+
+class JournalReplayTest(unittest.TestCase):
+    def replay(self, script):
+        backend = _JournalBackend.__new__(_JournalBackend)
+        backend.REPLAY = (sys.executable, "-u", "-c", script)
+        return list(backend.backfill())
+
+    def test_replay_streams_a_real_process_to_eof(self):
+        payload = line("a") + b"\n" + line("b")
+        records = self.replay(f"import sys; sys.stdout.buffer.write({payload!r})")
+        self.assertEqual([record.dedup for record in records], ["a", "b"])
+
+    def test_replay_stops_a_continuous_producer_at_the_record_limit(self):
+        payload = line() + b"\n"
+        script = f"import sys\nwhile True:\n sys.stdout.buffer.write({payload!r} * 1000)\n sys.stdout.flush()"
+        with mock.patch.object(kmsg, "MAX_BACKFILL_RECORDS", 3):
+            self.assertEqual(len(self.replay(script)), 3)
+
+    def test_replay_timeout_terminates_an_idle_process(self):
+        with mock.patch.object(kmsg, "BACKFILL_TIMEOUT", 0.02), \
+             mock.patch.object(kmsg.log, "warning") as warning:
+            self.assertEqual(self.replay("import time; time.sleep(1)"), [])
+        warning.assert_called_once()
+
+    def test_replay_failure_keeps_records_already_received(self):
+        payload = line() + b"\n"
+        with mock.patch.object(kmsg.log, "warning") as warning:
+            records = self.replay(f"import sys; sys.stdout.buffer.write({payload!r}); sys.exit(1)")
+        self.assertEqual([record.dedup for record in records], ["a"])
+        self.assertGreaterEqual(warning.call_count, 1)

@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import pathlib
+import selectors
 import shutil
 import subprocess
 import time
@@ -146,9 +147,9 @@ class _JournalBackend:
     #: Rejeu : process court qui se termine, donc lecture jusqu'à EOF.
     REPLAY = ("journalctl", "-k", "-b", "-o", "json", "--no-pager")
 
-    def __init__(self):
+    def __init__(self, command: tuple[str, ...] | None = None):
         self.proc = subprocess.Popen(
-            self.FOLLOW,
+            self.FOLLOW if command is None else command,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             close_fds=True,
@@ -244,20 +245,43 @@ class _JournalBackend:
         Lire l'historique dans le flux `-f` obligerait à deviner quand il est
         fini ; ici l'EOF le dit.
         """
+        replay = None
+        deadline = time.monotonic() + BACKFILL_TIMEOUT
+        seen = 0
         try:
-            done = subprocess.run(
-                self.REPLAY,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=BACKFILL_TIMEOUT,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            replay = _JournalBackend(self.REPLAY)
+            with selectors.DefaultSelector() as selector:
+                selector.register(replay.proc.stdout, selectors.EVENT_READ)
+                while seen < MAX_BACKFILL_RECORDS:
+                    try:
+                        records = list(replay.records(min(MAX_RECORDS_PER_TICK, MAX_BACKFILL_RECORDS - seen)))
+                    except OSError as exc:
+                        if not replay._eof or replay.proc.returncode != 0:
+                            log.warning("rejeu journald interrompu: %s", exc)
+                        break
+                    for record in records:
+                        if time.monotonic() >= deadline:
+                            log.warning("rejeu journald: délai de %.1fs atteint", BACKFILL_TIMEOUT)
+                            return
+                        seen += 1
+                        yield record
+                    if replay._eof and not replay._buffer:
+                        if replay.proc.poll() not in (None, 0):
+                            log.warning("rejeu journald terminé avec le code %s", replay.proc.returncode)
+                        break
+                    delay = deadline - time.monotonic()
+                    if delay <= 0:
+                        log.warning("rejeu journald: délai de %.1fs atteint", BACKFILL_TIMEOUT)
+                        break
+                    if b"\n" not in replay._buffer:
+                        selector.select(delay)
+                if seen >= MAX_BACKFILL_RECORDS:
+                    log.warning("rejeu journald limité à %d enregistrements", MAX_BACKFILL_RECORDS)
+        except OSError as exc:
             log.warning("rejeu journald impossible: %s", exc)
-            return
-        for line in done.stdout.splitlines()[:MAX_BACKFILL_RECORDS]:
-            record = self._parse(line)
-            if record is not None:
-                yield record
+        finally:
+            if replay is not None:
+                replay.close()
 
     def close(self) -> None:
         if self._closed:

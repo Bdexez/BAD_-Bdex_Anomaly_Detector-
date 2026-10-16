@@ -379,11 +379,15 @@ including malformed lines. The pending buffer is limited to 8 MiB; overflow
 drops old complete lines and logs the loss. Final buffered messages are drained
 before an exited journal process is reported as unavailable.
 
-> 🔁 **Startup replays the entire buffer of the current boot.** Errors that
+> 🔁 **Startup replays the available buffer of the current boot.** Errors that
 > occurred before the collector was launched — at boot, or while the service was
 > stopped — are recovered with their original timestamp. The deduplication key
 > makes this replay idempotent: restarting three times does not record the same
 > MCE three times.
+
+Replay is streamed instead of loading the full journal into memory. It stops
+after 50,000 records; the journald replay also has a 30-second deadline. Reaching
+either limit is logged, and the replay process is stopped and reaped.
 
 ### Stage 2 — The catch-all
 
