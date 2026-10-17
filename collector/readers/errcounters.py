@@ -43,11 +43,18 @@ class Counter(NamedTuple):
 
 def _sum_int_files(paths: list[pathlib.Path]) -> int | None:
     """Somme de compteurs entiers répartis sur plusieurs fichiers."""
-    values = [v for p in paths if (v := registry.read_int(p)) is not None]
-    return sum(values) if values else None
+    if not paths:
+        return None
+    total = 0
+    for path in paths:
+        value = registry.read_int(path)
+        if value is None or value < 0:
+            return None
+        total += value
+    return total
 
 
-def _sum_named_values(paths: list[pathlib.Path]) -> int | None:
+def _sum_named_values(paths: list[pathlib.Path], *, exclude_totals: bool = False) -> int | None:
     """Somme des valeurs de fichiers au format `Nom  valeur` par ligne.
 
     C'est la forme des compteurs AER (`RxErr 0`, `BadTLP 2`…) et RAS amdgpu
@@ -57,11 +64,18 @@ def _sum_named_values(paths: list[pathlib.Path]) -> int | None:
     for path in paths:
         text = registry.read_text(path)
         if text is None:
-            continue
+            return None
+        found = False
         for line in text.splitlines():
             parts = line.replace(":", " ").split()
-            if len(parts) >= 2 and parts[-1].lstrip("-").isdigit():
-                total = (total or 0) + int(parts[-1])
+            if not parts or (exclude_totals and parts[0].startswith("TOTAL_ERR_")):
+                continue
+            if len(parts) < 2 or not parts[-1].isdigit():
+                return None
+            total = (total or 0) + int(parts[-1])
+            found = True
+        if not found:
+            return None
     return total
 
 
@@ -109,11 +123,12 @@ class ErrorCounterReader(Reader):
         self.counters: list[Counter] = []
         self._prev: dict[str, int] = {}
         self._nvme_states: dict[pathlib.Path, str] = {}
+        self._irq_cache: dict[str, int] | None = None
 
     # -- découverte ---------------------------------------------------------
 
     def _candidates(self) -> list[Counter]:
-        irq = lambda label: (lambda: _interrupt_totals(self.proc / "interrupts").get(label))
+        irq = lambda label: (lambda: self._interrupts().get(label))
 
         edac = sorted(self.sys.glob("devices/system/edac/mc/mc*/[cu]e_count"))
         edac_ce = [p for p in edac if p.name.startswith("ce")]
@@ -181,17 +196,17 @@ class ErrorCounterReader(Reader):
                 "Erreurs PCIe corrigées par retransmission, sommées sur tous "
                 "les périphériques. Avancent souvent en silence : dmesg "
                 "rate-limite, le compteur non.",
-                lambda: _sum_named_values(aer_cor),
+                lambda: _sum_named_values(aer_cor, exclude_totals=True),
             ),
             Counter(
                 "err_aer_nonfatal", "pcie_fatal", errors.ERROR,
                 "Erreurs PCIe non fatales non corrigées.",
-                lambda: _sum_named_values(aer_non),
+                lambda: _sum_named_values(aer_non, exclude_totals=True),
             ),
             Counter(
                 "err_aer_fatal", "pcie_fatal", errors.CRITICAL,
                 "Erreurs PCIe fatales : lien perdu.",
-                lambda: _sum_named_values(aer_fat),
+                lambda: _sum_named_values(aer_fat, exclude_totals=True),
             ),
             Counter(
                 "err_cpu_throttle", "thermal_trip", errors.ERROR,
@@ -215,6 +230,11 @@ class ErrorCounterReader(Reader):
             ),
         ]
 
+    def _interrupts(self) -> dict[str, int]:
+        if self._irq_cache is None:
+            self._irq_cache = _interrupt_totals(self.proc / "interrupts")
+        return self._irq_cache
+
     def _vmstat(self) -> dict[str, int]:
         text = registry.read_text(self.proc / "vmstat")
         if text is None:
@@ -227,13 +247,14 @@ class ErrorCounterReader(Reader):
         return out
 
     def setup(self) -> bool:
+        self._irq_cache = None
         for counter in self._candidates():
             try:
                 value = counter.probe()
             except Exception as exc:
                 log.debug("sonde %s indisponible: %s", counter.field, exc)
                 continue
-            if value is None:
+            if value is None or value < 0:
                 continue
             self.counters.append(counter)
             self._prev[counter.field] = value
@@ -255,14 +276,17 @@ class ErrorCounterReader(Reader):
     # -- lecture ------------------------------------------------------------
 
     def read(self) -> dict[str, float | None]:
+        self._irq_cache = None
         out: dict[str, float | None] = {}
         for counter in self.counters:
             try:
                 value = counter.probe()
             except Exception:
+                self._prev.pop(counter.field, None)
                 out[counter.field] = None
                 continue
-            if value is None:
+            if value is None or value < 0:
+                self._prev.pop(counter.field, None)
                 out[counter.field] = None
                 continue
             previous = self._prev.get(counter.field)
@@ -270,7 +294,7 @@ class ErrorCounterReader(Reader):
             if previous is None or value < previous:
                 # Compteur remis à zéro (périphérique retiré puis remis) :
                 # on repart de la nouvelle base sans inventer un delta négatif.
-                out[counter.field] = 0.0
+                out[counter.field] = None
                 continue
             delta = value - previous
             out[counter.field] = float(delta)

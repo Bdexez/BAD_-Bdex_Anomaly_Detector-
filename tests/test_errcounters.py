@@ -3,8 +3,10 @@ from __future__ import annotations
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 from collector import errors
+from collector.readers import errcounters
 from collector.readers.errcounters import ErrorCounterReader, _interrupt_totals
 
 from .helpers import write
@@ -99,7 +101,7 @@ class CounterTest(unittest.TestCase):
         reader = self.reader()
         reader.setup()
         self.set_interrupts(1)  # 5 -> 1
-        self.assertEqual(reader.read()["err_nmi"], 0.0)
+        self.assertIsNone(reader.read()["err_nmi"])
         self.set_interrupts(3)
         self.assertEqual(reader.read()["err_nmi"], 2.0)
 
@@ -112,9 +114,9 @@ class CounterTest(unittest.TestCase):
 
     def test_aer_counters_sum_named_values(self):
         write(self.sys / "bus/pci/devices/0000:00:01.0/aer_dev_correctable",
-              "RxErr 2\nBadTLP 1\nBadDLLP 0\n")
+              "Receiver Error 2\nBadTLP 1\nBadDLLP 0\nTOTAL_ERR_COR 1\n")
         write(self.sys / "bus/pci/devices/0000:01:00.0/aer_dev_correctable",
-              "RxErr 4\nBadTLP 0\n")
+              "RxErr 4\nBadTLP 0\nTOTAL_ERR_COR 2\n")
         reader = self.reader()
         reader.setup()
         self.assertIn("err_aer_corr", reader.fields)
@@ -151,3 +153,56 @@ class CounterTest(unittest.TestCase):
         reader.setup()
         (self.proc / "interrupts").unlink()
         self.assertIsNone(reader.read()["err_nmi"])
+
+    def test_interrupts_are_read_once_per_setup_and_tick(self):
+        reader = self.reader()
+        with mock.patch.object(errcounters, "_interrupt_totals", wraps=errcounters._interrupt_totals) as read:
+            reader.setup()
+            self.assertEqual(read.call_count, 1)
+            self.assertEqual(reader.read()["err_nmi"], 0.0)
+            self.assertEqual(read.call_count, 2)
+
+    def test_gap_does_not_turn_accumulated_errors_into_a_one_tick_spike(self):
+        reader = self.reader()
+        reader.setup()
+        self.emitted.clear()
+        (self.proc / "interrupts").unlink()
+        self.assertIsNone(reader.read()["err_nmi"])
+        self.set_interrupts(9)
+        self.assertIsNone(reader.read()["err_nmi"])
+        self.assertEqual(self.emitted, [])
+        self.set_interrupts(10)
+        self.assertEqual(reader.read()["err_nmi"], 1.0)
+
+    def test_partial_aggregate_is_unknown_until_all_sources_recover(self):
+        first = write(self.sys / "devices/system/edac/mc/mc0/ce_count", "5")
+        second = write(self.sys / "devices/system/edac/mc/mc1/ce_count", "10")
+        reader = self.reader()
+        reader.setup()
+        self.emitted.clear()
+        second.unlink()
+        self.assertIsNone(reader.read()["err_ecc_ce"])
+        second.write_text("10")
+        self.assertIsNone(reader.read()["err_ecc_ce"])
+        self.assertEqual(self.emitted, [])
+        first.write_text("6")
+        self.assertEqual(reader.read()["err_ecc_ce"], 1.0)
+
+    def test_malformed_named_counter_does_not_produce_a_partial_total(self):
+        path = write(self.sys / "bus/pci/devices/0000:00:01.0/aer_dev_correctable", "RxErr 2\nBadTLP 1\n")
+        reader = self.reader()
+        reader.setup()
+        path.write_text("RxErr 2\nBadTLP unreadable\n")
+        self.assertIsNone(reader.read()["err_aer_corr"])
+        path.write_text("RxErr 2\nBadTLP 1\n")
+        self.assertIsNone(reader.read()["err_aer_corr"])
+
+    def test_probe_exception_also_resets_the_baseline(self):
+        reader = self.reader()
+        reader.setup()
+        for i, counter in enumerate(reader.counters):
+            if counter.field == "err_nmi":
+                reader.counters[i] = counter._replace(probe=mock.Mock(side_effect=[OSError("gone"), 9, 10]))
+        self.assertIsNone(reader.read()["err_nmi"])
+        self.assertIsNone(reader.read()["err_nmi"])
+        self.assertEqual(reader.read()["err_nmi"], 1.0)

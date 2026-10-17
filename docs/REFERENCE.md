@@ -430,6 +430,16 @@ column of `samples`, and any movement writes a row into `events`. A non-zero val
 **at startup** is reported too: a machine already counting 4,000 corrected ECC
 errors since boot should say so at the first tick, not wait for the 4,001st.
 
+After a missing read or a counter reset, the delta is `NULL` until a new
+baseline is available. An aggregate is unknown if any discovered member is
+unreadable, preventing recovery from producing a false error spike. Interrupt
+counters share one `/proc/interrupts` snapshot per tick.
+
+For PCIe AER, BAD sums the detailed error indicators and excludes the
+`TOTAL_ERR_*` notification counters. The kernel documents that one notification
+can contain several indicators; adding both would mix and inflate the counts.
+See the [kernel AER ABI](https://www.kernel.org/doc/html/latest/admin-guide/abi-testing.html).
+
 ### Coverage, machine by machine
 
 It is not the same everywhere, and `--doctor` says so — including what is **not**
