@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 import csv
 import json
 import pathlib
@@ -12,6 +12,7 @@ import sqlite3
 import sys
 from typing import TextIO
 
+from .database import read_snapshot
 from .storage import quote_identifier
 
 
@@ -32,9 +33,7 @@ def export_csv(
     """
     if since is not None and until is not None and until <= since:
         raise ValueError("--until doit être supérieur à --since")
-    uri = pathlib.Path(db).resolve().as_uri() + "?mode=ro"
-    with closing(sqlite3.connect(uri, uri=True, isolation_level=None)) as conn:
-        conn.execute("BEGIN")
+    with read_snapshot(db) as conn:
         fields = conn.execute("PRAGMA table_info(samples)").fetchall()
         available = [field[1] for field in fields]
         selected = available if columns is None else list(columns)
