@@ -59,6 +59,17 @@ The export reads a consistent snapshot while collection continues, without modif
 
 Use `--since` and `--until` for an inclusive/exclusive range in epoch milliseconds. Output defaults to stdout; `--output` creates a new file and refuses to overwrite an existing one. See the [export reference](docs/REFERENCE.md#exporting-data) for examples.
 
+## Check dataset quality
+
+Check the dataset before exporting or training:
+
+```bash
+python -m collector.report --db data/metrics.db
+python -m collector.report --db data/metrics.db --json
+```
+
+The report shows metric completeness, annotation coverage, sample windows per boot, repeated timestamps and grouped fault events. It reads a consistent snapshot without modifying the database; overlapping experiment labels count each sample once. These are data quality facts, not inferred anomaly scores.
+
 ## Design
 
 Each reader owns one source, discovers it during setup and returns a dictionary of values on each tick. A missing source disables itself; read failures are tracked without bringing down the acquisition loop.
@@ -107,5 +118,6 @@ The suite exercises fake `/proc` and `/sys` trees, sensor discovery, counter wra
 | [`collector/storage.py`](collector/storage.py) | SQLite schema evolution, batching, events and labels |
 | [`collector/label.py`](collector/label.py) | Experiment annotation CLI |
 | [`collector/export.py`](collector/export.py) | Read-only CSV export with experiment annotations |
+| [`collector/report.py`](collector/report.py) | Dataset completeness and annotation coverage |
 
 Coverage is hardware-dependent. Software counters cannot expose every physical failure, and heuristic workload labels need interpretation. The [complete reference](docs/REFERENCE.md) documents measurement limits, experiment protocols and machine-specific coverage.

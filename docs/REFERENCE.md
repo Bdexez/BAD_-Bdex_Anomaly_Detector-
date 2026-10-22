@@ -33,6 +33,7 @@ of first.
 - [Layout](#-layout)
 - [Data model](#-data-model)
 - [Exporting data](#exporting-data)
+- [Dataset quality report](#dataset-quality-report)
 - [What each reader collects](#-what-each-reader-collects)
 - [Context](#-context-or-why-this-is-not-a-kaggle-notebook)
 - [Experimental protocols](#-experimental-protocols)
@@ -226,6 +227,24 @@ destination must be a new file; existing files, including the source database,
 are never overwritten. Failed exports and Ctrl+C remove the file created by
 that invocation. A long-running snapshot can keep the collector's WAL file
 from shrinking until the export finishes.
+
+### Dataset quality report
+
+```bash
+python -m collector.report --db data/metrics.db
+python -m collector.report --db data/metrics.db --json
+```
+
+The report counts non-NULL values for each metric, including legitimate zeroes
+and empty strings. Coverage on an empty dataset is undefined (`null` in JSON).
+Annotation coverage uses the same `[start, end)` windows as export and counts
+overlapping labels once per sample. Boot summaries include sample windows and
+repeated timestamps; events are grouped by source, kind and severity.
+
+All sections use one read-only snapshot and SQL aggregations. Samples are not
+loaded into Python memory, legacy schemas are not migrated, and no `normal`
+label or anomaly score is inferred. Completeness measures availability, not
+sensor accuracy.
 
 ## 📊 What each reader collects
 

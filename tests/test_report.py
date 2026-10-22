@@ -107,4 +107,19 @@ class DatasetReportTest(unittest.TestCase):
         self.assertEqual(report["metrics"][0]["present"], 1)
         self.assertEqual(db.read_bytes(), before)
 
+    def test_json_and_text_cli_outputs_are_available(self):
+        self.seed()
+        with redirect_stdout(io.StringIO()) as output:
+            report_module.main(["--db", str(self.db), "--json"])
+        self.assertEqual(json.loads(output.getvalue())["samples"]["count"], 4)
+        with redirect_stdout(io.StringIO()) as output:
+            report_module.main(["--db", str(self.db)])
+        self.assertIn("Mesures annotées : 3/4", output.getvalue())
+        self.assertIn("cpu_util", output.getvalue())
 
+    def test_missing_database_is_not_created_by_the_cli(self):
+        missing = self.db.with_name("missing.db")
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            report_module.main(["--db", str(missing)])
+        self.assertEqual(error.exception.code, 2)
+        self.assertFalse(missing.exists())

@@ -65,5 +65,36 @@ def dataset_report(db: str | pathlib.Path) -> dict:
         }
 
 
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="État et complétude du dataset BAD")
+    parser.add_argument("--db", default="data/metrics.db", help="base SQLite existante")
+    parser.add_argument("--json", action="store_true", help="rapport JSON pour les scripts")
+    args = parser.parse_args(argv)
+    try:
+        report = dataset_report(args.db)
+    except (ValueError, OSError, sqlite3.Error) as exc:
+        parser.error(str(exc))
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+    samples = report["samples"]
+    print(f"Mesures : {samples['count']} · boots : {len(report['boots'])}")
+    print(f"Période (epoch ms) : {samples['first_ts']} → {samples['last_ts']}")
+    coverage = samples["labelled_pct"]
+    formatted = "indéfinie" if coverage is None else f"{coverage:.1f} %"
+    print(f"Mesures annotées : {samples['labelled']}/{samples['count']} ({formatted})")
+    print(f"Fenêtres : {report['labels']['total']} · ouvertes : {report['labels']['open']}")
+    for boot in report["boots"]:
+        print(f"  boot {boot['boot_id']} : {boot['samples']} mesures, "
+              f"{boot['duplicate_timestamps']} horodatage(s) répété(s)")
+    for metric in report["metrics"]:
+        coverage = metric["coverage_pct"]
+        formatted = "indéfinie" if coverage is None else f"{coverage:.1f} %"
+        print(f"  {metric['column']} : {formatted} présente(s), {metric['missing']} manquante(s)")
+    print(f"Événements : {sum(event['count'] for event in report['events'])}")
+    for event in report["events"]:
+        print(f"  {event['source']}/{event['kind']} ({event['severity']}) : {event['count']}")
 
 
+if __name__ == "__main__":
+    main()
