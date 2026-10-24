@@ -34,6 +34,7 @@ of first.
 - [Data model](#-data-model)
 - [Exporting data](#exporting-data)
 - [Dataset quality report](#dataset-quality-report)
+- [Backing up during collection](#backing-up-during-collection)
 - [What each reader collects](#-what-each-reader-collects)
 - [Context](#-context-or-why-this-is-not-a-kaggle-notebook)
 - [Experimental protocols](#-experimental-protocols)
@@ -167,8 +168,8 @@ rebuild a table from an outdated list of sensor columns.
 
 > 💡 **SQLite and not PostgreSQL** — a single writer, local, no network, no
 > concurrency. In WAL mode, SQLite handles 1 Hz without breaking a sweat and the
-> single file is trivially copied and versioned. Postgres here would be
-> gratuitous complexity.
+> backup API can produce a standalone copy while collection continues. Postgres
+> here would be gratuitous complexity.
 
 ### Collection reliability
 
@@ -245,6 +246,24 @@ All sections use one read-only snapshot and SQL aggregations. Samples are not
 loaded into Python memory, legacy schemas are not migrated, and no `normal`
 label or anomaly score is inferred. Completeness measures availability, not
 sensor accuracy.
+
+### Backing up during collection
+
+```bash
+python -m collector.backup --db data/metrics.db --output data/metrics-backup.db
+python -m collector.backup --db data/metrics.db --output data/metrics-backup.db --timeout 60
+```
+
+The backup uses SQLite's online backup API and includes committed transactions
+from the active WAL. It never migrates or modifies the source. The destination
+must be a new file; after `quick_check`, its journal mode is changed to DELETE
+so the resulting database is self-contained, with no WAL sidecars to copy.
+It can be opened by the collector, exporter or report tool.
+
+The copying deadline defaults to 30 seconds and must be finite and positive.
+Errors and Ctrl+C remove the partial destination after closing its connection.
+Samples or events still queued in the collector's RAM are outside the backup
+until they have been committed. Collection can continue throughout the copy.
 
 ## 📊 What each reader collects
 

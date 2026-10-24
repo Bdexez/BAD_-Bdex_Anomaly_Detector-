@@ -70,6 +70,14 @@ python -m collector.report --db data/metrics.db --json
 
 The report shows metric completeness, annotation coverage, sample windows per boot, repeated timestamps and grouped fault events. It reads a consistent snapshot without modifying the database; overlapping experiment labels count each sample once. These are data quality facts, not inferred anomaly scores.
 
+## Back up an active collection
+
+```bash
+python -m collector.backup --db data/metrics.db --output data/metrics-backup.db
+```
+
+The SQLite backup includes committed WAL transactions while collection continues, checks the copy and produces a standalone database file. It refuses to overwrite existing files. `--timeout` limits copying (30 seconds by default); pending samples still buffered in RAM are included only after the collector flushes them.
+
 ## Design
 
 Each reader owns one source, discovers it during setup and returns a dictionary of values on each tick. A missing source disables itself; read failures are tracked without bringing down the acquisition loop.
@@ -119,5 +127,6 @@ The suite exercises fake `/proc` and `/sys` trees, sensor discovery, counter wra
 | [`collector/label.py`](collector/label.py) | Experiment annotation CLI |
 | [`collector/export.py`](collector/export.py) | Read-only CSV export with experiment annotations |
 | [`collector/report.py`](collector/report.py) | Dataset completeness and annotation coverage |
+| [`collector/backup.py`](collector/backup.py) | Consistent backup while collection continues |
 
 Coverage is hardware-dependent. Software counters cannot expose every physical failure, and heuristic workload labels need interpretation. The [complete reference](docs/REFERENCE.md) documents measurement limits, experiment protocols and machine-specific coverage.

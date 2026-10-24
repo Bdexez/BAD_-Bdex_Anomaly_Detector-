@@ -3,6 +3,7 @@ from __future__ import annotations
 import pathlib
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -78,6 +79,22 @@ class BackupTest(unittest.TestCase):
             with self.subTest(timeout=timeout), self.assertRaises(ValueError):
                 backup_database(self.db, self.destination, timeout=timeout)
             self.assertFalse(self.destination.exists())
+
+    def test_locked_source_does_not_wait_for_the_default_sqlite_timeout(self):
+        locked = self.db.with_name("locked.db")
+        blocker = sqlite3.connect(locked)
+        self.addCleanup(blocker.close)
+        blocker.execute("CREATE TABLE test (value INTEGER)")
+        blocker.commit()
+        blocker.execute("BEGIN EXCLUSIVE")
+        started = time.monotonic()
+        try:
+            with self.assertRaises(TimeoutError):
+                backup_database(locked, self.destination, timeout=0.02)
+        finally:
+            blocker.rollback()
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertFalse(self.destination.exists())
 
     def test_old_schema_is_copied_without_migrating_the_source(self):
         legacy = self.db.with_name("legacy.db")

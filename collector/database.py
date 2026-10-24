@@ -9,8 +9,8 @@ import sqlite3
 
 
 @contextmanager
-def read_snapshot(path: str | pathlib.Path) -> Iterator[sqlite3.Connection]:
+def read_snapshot(path: str | pathlib.Path, *, timeout: float = 5.0) -> Iterator[sqlite3.Connection]:
     uri = pathlib.Path(path).resolve().as_uri() + "?mode=ro"
-    with closing(sqlite3.connect(uri, uri=True, isolation_level=None)) as conn:
+    with closing(sqlite3.connect(uri, uri=True, isolation_level=None, timeout=timeout)) as conn:
         conn.execute("BEGIN")
         yield conn

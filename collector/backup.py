@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+from collections.abc import Sequence
 from contextlib import closing
 import math
 import pathlib
@@ -32,7 +34,9 @@ def backup_database(
         if time.monotonic() >= deadline:
             raise TimeoutError("délai de sauvegarde dépassé")
 
-    with read_snapshot(db) as source:
+    # L'attente SQLite par défaut de 5 s masquerait les petits délais choisis
+    # par l'utilisateur. L'API backup réessaie avec son propre callback borné.
+    with read_snapshot(db, timeout=0.0) as source:
         # Création exclusive avant que SQLite ouvre le fichier : protège aussi
         # la source si elle a été choisie par erreur comme destination.
         destination.open("xb").close()
@@ -46,3 +50,20 @@ def backup_database(
             destination.unlink(missing_ok=True)
             raise
     return destination
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Sauvegarder une base BAD pendant la collecte")
+    parser.add_argument("--db", default="data/metrics.db", help="base SQLite existante")
+    parser.add_argument("--output", required=True, type=pathlib.Path, help="nouveau fichier de sauvegarde")
+    parser.add_argument("--timeout", type=float, default=30.0, help="délai de copie en secondes (défaut : 30)")
+    args = parser.parse_args(argv)
+    try:
+        destination = backup_database(args.db, args.output, timeout=args.timeout)
+    except (ValueError, OSError, sqlite3.Error) as exc:
+        parser.error(f"sauvegarde impossible: {exc}")
+    print(f"sauvegarde créée : {destination}")
+
+
+if __name__ == "__main__":
+    main()
