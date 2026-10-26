@@ -59,6 +59,11 @@ class JournalStreamTest(unittest.TestCase):
         backend, _ = self.backend([line(), b""], status=0)
         self.assertEqual([r.dedup for r in backend.records(10)], ["a"])
 
+    def test_closed_stdout_is_unavailable_even_if_the_child_is_still_running(self):
+        backend, _ = self.backend([b""], status=None)
+        with self.assertRaisesRegex(OSError, "fermé sa sortie"):
+            list(backend.records(10))
+
     def test_overflow_discards_old_data_at_a_line_boundary(self):
         payload = b"\n".join(line(str(i)) for i in range(10)) + b"\n"
         backend, _ = self.backend([payload, None])

@@ -416,6 +416,8 @@ Live journal reads consume at most 256 KiB and 2,000 physical lines per tick,
 including malformed lines. The pending buffer is limited to 8 MiB; overflow
 drops old complete lines and logs the loss. Final buffered messages are drained
 before an exited journal process is reported as unavailable.
+A closed output stream is also unavailable even if its child process is still
+running; it cannot masquerade as a healthy source with zero errors forever.
 
 > 🔁 **Startup replays the available buffer of the current boot.** Errors that
 > occurred before the collector was launched — at boot, or while the service was

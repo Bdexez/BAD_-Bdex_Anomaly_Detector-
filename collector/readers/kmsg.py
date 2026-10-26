@@ -205,8 +205,11 @@ class _JournalBackend:
             record = self._parse(line)
             if record is not None:
                 yield record
-        if not lines and self._eof and self.proc.poll() is not None:
-            raise OSError(f"journalctl s'est arrêté (code {self.proc.returncode})")
+        if not lines and self._eof:
+            status = self.proc.poll()
+            if status is None:
+                raise OSError("journalctl a fermé sa sortie")
+            raise OSError(f"journalctl s'est arrêté (code {status})")
 
     @staticmethod
     def _parse(line: bytes) -> Record | None:
