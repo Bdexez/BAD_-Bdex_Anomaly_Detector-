@@ -76,13 +76,14 @@ class HwmonReader(Reader):
                     (
                         p
                         for suffix in suffixes
-                        if (p := hwmon / f"{channel}{index}_{suffix}").exists()
+                        if registry.read_int(p := hwmon / f"{channel}{index}_{suffix}")
+                        is not None
                     ),
                     None,
                 )
                 # Un canal peut n'exposer qu'un label (amdgpu: power1_label sans
                 # power1_average). Pas de fichier valeur = pas de colonne.
-                if value_path is None or registry.read_int(value_path) is None:
+                if value_path is None:
                     continue
                 column = self._column_name(hwmon, channel, index, unit, found)
                 found[column] = (value_path, scale)

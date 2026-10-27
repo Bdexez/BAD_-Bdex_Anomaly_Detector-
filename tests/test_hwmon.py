@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 from collector import registry
+from collector.readers.amdgpu import AmdGpuReader
 from collector.readers.gigabyte_wmi import GigabyteWmiReader
 from collector.readers.k10temp import K10TempReader
 from collector.readers.nvme import NvmeReader
@@ -86,3 +87,23 @@ class HwmonReaderTest(unittest.TestCase):
         self.assertTrue(reader.setup())
         (hwmon / "temp1_input").unlink()
         self.assertEqual(reader.read(), {"k10temp_temp1": None})
+
+    def test_power_uses_first_readable_source(self):
+        for average in (None, "n/a\n", "7000000\n", "0\n"):
+            with self.subTest(average=average):
+                hwmon = make_hwmon(self.root, 0, "amdgpu", {
+                    "power1_input": "5000000\n",
+                    "power1_label": "PPT\n",
+                })
+                preferred = hwmon / "power1_average"
+                if average is not None:
+                    preferred.write_text(average)
+                reader = AmdGpuReader()
+                self.assertTrue(reader.setup())
+                expected = 5.0 if average in (None, "n/a\n") else int(average) / 1e6
+                self.assertEqual(reader.read(), {"amdgpu_ppt_w": expected})
+                # La source choisie au setup reste stable pendant la collecte.
+                if average in (None, "n/a\n"):
+                    preferred.write_text("9000000\n")
+                    self.assertEqual(reader.read(), {"amdgpu_ppt_w": 5.0})
+                preferred.unlink(missing_ok=True)
