@@ -12,9 +12,11 @@ un ordre *numérique* stable, et find_all_hwmon() renvoie la liste complète.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import pathlib
 import re
+from collections.abc import Collection
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +33,31 @@ def slug(text: str) -> str:
     eux, ne sont contraints par rien.
     """
     return _SLUG_RE.sub("_", text.strip().lower()).strip("_")
+
+
+def unique_metric_name(name: str, taken: Collection[str] = ()) -> str:
+    """Identifiant SQL stable, distinct des noms déjà attribués (63 caractères).
+
+    Les noms usuels restent inchangés. Un hash conserve la distinction entre
+    deux labels longs partageant le même début ; les doublons sont numérotés
+    dans l'ordre de découverte.
+    """
+    base = slug(name) or "metric"
+    if base[0].isdigit():
+        base = "metric_" + base
+
+    def bounded(value: str) -> str:
+        if len(value) <= 63:
+            return value
+        digest = hashlib.sha256(value.encode("ascii")).hexdigest()[:12]
+        return value[:50] + "_" + digest
+
+    candidate = bounded(base)
+    index = 2
+    while candidate in taken:
+        candidate = bounded(f"{base}_{index}")
+        index += 1
+    return candidate
 
 
 def _hwmon_index(path: pathlib.Path) -> tuple[int, str]:

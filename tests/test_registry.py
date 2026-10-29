@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 from collector import registry
+from collector.storage import check_identifier
 
 from .helpers import make_hwmon, write
 
@@ -16,6 +17,18 @@ class SlugTest(unittest.TestCase):
         self.assertEqual(registry.slug("Composite 0"), "composite_0")
         self.assertEqual(registry.slug("  S0-in  "), "s0_in")
         self.assertEqual(registry.slug("Sensor 1 (edge)"), "sensor_1_edge")
+
+    def test_metric_names_fit_the_storage_contract(self):
+        taken = set()
+        for raw in ("temp_tctl", "9 volts", "???", "a" * 100 + "x",
+                    "a" * 100 + "y", "a" * 100 + "x", "temp_tctl", "temp_tctl_2"):
+            with self.subTest(raw=raw):
+                field = registry.unique_metric_name(raw, taken)
+                self.assertEqual(check_identifier(field), field)
+                self.assertNotIn(field, taken)
+                taken.add(field)
+        self.assertIn("temp_tctl", taken)
+        self.assertIn("temp_tctl_2", taken)
 
 
 class HwmonTest(unittest.TestCase):

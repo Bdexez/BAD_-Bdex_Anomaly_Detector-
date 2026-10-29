@@ -6,10 +6,12 @@ import unittest
 from unittest import mock
 
 from collector import registry
+from collector.main import SCHEMA
 from collector.readers.amdgpu import AmdGpuReader
 from collector.readers.gigabyte_wmi import GigabyteWmiReader
 from collector.readers.k10temp import K10TempReader
 from collector.readers.nvme import NvmeReader
+from collector.storage import Storage
 
 from .helpers import make_hwmon
 
@@ -80,6 +82,39 @@ class HwmonReaderTest(unittest.TestCase):
         self.assertEqual(first.fields, ["nvme_temp1"])
         self.assertEqual(second.fields, ["nvme1_temp1"])
         self.assertFalse(NvmeReader(2).setup())
+
+    def test_labels_colliding_with_generated_suffixes_keep_all_sensors(self):
+        labels = ["Composite3", "Composite", "Composite", "Composite3_2"]
+        files = {}
+        for index, label in enumerate(labels, 1):
+            files[f"temp{index}_input"] = str(index * 1000)
+            files[f"temp{index}_label"] = label
+        make_hwmon(self.root, 0, "nvme", files)
+        reader = NvmeReader()
+        self.assertTrue(reader.setup())
+        self.assertEqual(len(reader.fields), 4)
+        self.assertEqual(sorted(reader.read().values()), [1.0, 2.0, 3.0, 4.0])
+        again = NvmeReader()
+        self.assertTrue(again.setup())
+        self.assertEqual(reader.fields, again.fields)
+
+    def test_long_labels_remain_distinct_and_fit_sql_columns(self):
+        make_hwmon(self.root, 0, "k10temp", {
+            "temp1_input": "40000", "temp1_label": "a" * 100 + "x",
+            "temp2_input": "41000", "temp2_label": "a" * 100 + "y",
+        })
+        reader = K10TempReader()
+        self.assertTrue(reader.setup())
+        self.assertEqual(len(set(reader.fields)), 2)
+        self.assertTrue(all(len(field) <= 63 for field in reader.fields))
+        self.assertEqual(sorted(reader.read().values()), [40.0, 41.0])
+        storage = Storage(self.root / "sensors.db", SCHEMA)
+        self.addCleanup(storage.close)
+        storage.ensure_columns(reader.fields)
+        storage.insert_samples([{"ts": 1, "boot_id": "test", **reader.read()}])
+        columns = ", ".join(reader.fields)
+        self.assertEqual(storage.conn.execute(f"SELECT {columns} FROM samples").fetchall(),
+                         [(40.0, 41.0)])
 
     def test_sensor_disappearing_at_runtime_yields_none(self):
         hwmon = make_hwmon(self.root, 0, "k10temp", {"temp1_input": "44000\n"})

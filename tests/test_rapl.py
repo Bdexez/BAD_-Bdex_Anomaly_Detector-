@@ -50,6 +50,16 @@ class RaplTest(unittest.TestCase):
     def test_no_zone_disables_reader(self):
         self.assertFalse(RaplReader(root=self.root).setup())
 
+    def test_duplicate_and_long_zone_labels_keep_every_zone(self):
+        for index, label in enumerate(("core", "core", "x" * 100 + "a", "x" * 100 + "b")):
+            self.zone(f"intel-rapl:0:{index}", label, 0)
+        reader = RaplReader(root=self.root)
+        self.assertTrue(reader.setup())
+        self.assertEqual(len(set(reader.fields)), 4)
+        self.assertIn("rapl_core_watts", reader.fields)
+        self.assertTrue(all(len(field) <= 63 for field in reader.fields))
+        self.assertEqual(len(set(reader._zones.values())), 4)
+
     def test_zone_without_max_is_ignored(self):
         zone = self.zone("intel-rapl:0", "package-0", 0)
         (zone / "max_energy_range_uj").unlink()

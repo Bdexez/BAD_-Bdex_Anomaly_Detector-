@@ -94,6 +94,8 @@ Each reader owns one source, discovers it during setup and returns a dictionary 
 
 Samples are flushed after 30 new readings or 30 seconds, including when sampling less frequently. Failed batches are retried at these intervals. Each queue holds up to 10,000 entries; saturation drops the oldest entries and logs the loss. Pending data lives in memory, so a forced exit or shutdown during a persistent storage failure can still lose it. Existing databases are migrated automatically while preserving their rows and sensor columns.
 
+Sensor names remain distinct when hardware labels repeat. Long labels receive a stable hash suffix to fit the 63-character column limit. For hwmon power, discovery prefers a readable average and falls back to an instantaneous input; the selected source stays fixed during collection.
+
 ## Data sources
 
 | Source group | Readers |

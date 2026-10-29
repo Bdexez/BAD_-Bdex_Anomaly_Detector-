@@ -112,10 +112,12 @@ class HwmonReader(Reader):
             raw = registry.read_text(hwmon / f"{channel}{index}_label")
             label = registry.slug(raw) if raw else None
         stem = label or f"{channel}{index}"
-        column = f"{self.column_prefix}_{stem}{unit}"
+        column = registry.unique_metric_name(f"{self.column_prefix}_{stem}{unit}")
         # Deux canaux peuvent porter le même label (deux "Composite").
         if column in taken:
-            column = f"{self.column_prefix}_{stem}{index}{unit}"
+            column = registry.unique_metric_name(
+                f"{self.column_prefix}_{stem}{index}{unit}", taken
+            )
         return column
 
     def read(self) -> dict[str, float | None]:

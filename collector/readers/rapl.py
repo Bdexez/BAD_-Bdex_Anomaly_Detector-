@@ -91,7 +91,9 @@ class RaplReader(Reader):
             if not maximum:
                 log.warning("%s sans max_energy_range_uj, zone ignorée", zone)
                 continue
-            field = self._field_name(match, registry.read_text(zone / "name"), multi)
+            field = registry.unique_metric_name(
+                self._field_name(match, registry.read_text(zone / "name"), multi), zones
+            )
             zones[field] = energy
             self._max[field] = maximum
         return zones
