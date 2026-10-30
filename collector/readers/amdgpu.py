@@ -37,7 +37,13 @@ class AmdGpuReader(HwmonReader):
             return False
         self._busy = self._find_busy(self.dir)
         if self._busy is not None:
-            self.fields = [*self.fields, f"{self.column_prefix}_busy_pct"]
+            self._busy_field = f"{self.column_prefix}_busy_pct"
+            # Un label hwmon peut aussi s'appeler « busy_pct ». La métrique
+            # d'occupation garde son nom public ; le capteur reste distinct.
+            if self._busy_field in self._paths:
+                renamed = registry.unique_metric_name(self._busy_field, self.fields)
+                self._paths[renamed] = self._paths.pop(self._busy_field)
+            self.fields = [*self._paths, self._busy_field]
         return True
 
     @staticmethod
@@ -52,5 +58,5 @@ class AmdGpuReader(HwmonReader):
         out = super().read()
         if self._busy is not None:
             raw = registry.read_int(self._busy)
-            out[f"{self.column_prefix}_busy_pct"] = None if raw is None else float(raw)
+            out[self._busy_field] = None if raw is None else float(raw)
         return out

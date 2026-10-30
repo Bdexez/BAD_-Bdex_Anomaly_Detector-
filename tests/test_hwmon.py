@@ -142,3 +142,18 @@ class HwmonReaderTest(unittest.TestCase):
                     preferred.write_text("9000000\n")
                     self.assertEqual(reader.read(), {"amdgpu_ppt_w": 5.0})
                 preferred.unlink(missing_ok=True)
+
+    def test_gpu_utilization_and_colliding_sensor_labels_stay_distinct(self):
+        make_hwmon(self.root, 0, "amdgpu", {
+            "temp1_input": "42000", "temp1_label": "Busy Pct",
+            "temp2_input": "43000", "temp2_label": "Busy Pct 2",
+            "device/gpu_busy_percent": "75",
+        })
+        reader = AmdGpuReader()
+        self.assertTrue(reader.setup())
+        self.assertEqual(reader.read(), {
+            "amdgpu_busy_pct": 75.0,
+            "amdgpu_busy_pct_2": 43.0,
+            "amdgpu_busy_pct_3": 42.0,
+        })
+        self.assertEqual(len(reader.fields), len(set(reader.fields)))
