@@ -13,6 +13,8 @@ import logging
 import math
 from collections.abc import Callable
 
+from ..storage import COLUMN_TYPES, check_identifier
+
 log = logging.getLogger(__name__)
 
 
@@ -89,6 +91,7 @@ class ReaderState:
     """
 
     MAX_FAILURES = 3
+    RESERVED_FIELDS = frozenset({"sample_id", "ts", "boot_id"})
 
     def __init__(
         self,
@@ -99,7 +102,29 @@ class ReaderState:
         self.failures = 0
         self.enabled = True
         self.on_disable = on_disable
-        self._allowed = frozenset(reader.fields)
+        if not isinstance(reader.fields, (list, tuple)):
+            raise ValueError("fields doit être une liste de noms de colonnes")
+        self.fields = tuple(reader.fields)
+        for field in self.fields:
+            if not isinstance(field, str):
+                raise ValueError(f"nom de colonne invalide: {field!r}")
+            check_identifier(field)
+            if field in self.RESERVED_FIELDS:
+                raise ValueError(f"colonne réservée au collector: {field}")
+        self._allowed = frozenset(self.fields)
+        if len(self._allowed) != len(self.fields):
+            raise ValueError("colonnes déclarées en double")
+        if isinstance(reader.text_fields, str):
+            raise ValueError("text_fields doit contenir des noms de colonnes")
+        self._text_fields = frozenset(reader.text_fields)
+        if not self._text_fields <= self._allowed:
+            raise ValueError("text_fields contient des colonnes non déclarées")
+        self.column_types = {field: reader.column_type(field) for field in self.fields}
+        for field, kind in self.column_types.items():
+            if kind not in COLUMN_TYPES:
+                raise ValueError(f"type de colonne invalide pour {field}: {kind!r}")
+            if (kind == "TEXT") != (field in self._text_fields):
+                raise ValueError(f"type incohérent avec text_fields pour {field}")
         self._warned_unknown = False
         self._warned_invalid: set[str] = set()
 
@@ -131,7 +156,7 @@ class ReaderState:
         for field, value in data.items():
             if value is None:
                 valid = True
-            elif field in self.reader.text_fields:
+            elif field in self._text_fields:
                 valid = isinstance(value, str)
             elif isinstance(value, int):
                 valid = -(2**63) <= value < 2**63

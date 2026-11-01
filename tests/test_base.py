@@ -25,6 +25,35 @@ class FakeReader(Reader):
 
 
 class ReaderStateTest(unittest.TestCase):
+    def test_rejects_malformed_or_reserved_field_declarations(self):
+        for fields in ("a", [None], ["a", "a"], ["not a column"], ["a" * 64],
+                       ["ts"], ["boot_id"], ["sample_id"]):
+            with self.subTest(fields=fields):
+                reader = FakeReader([])
+                reader.fields = fields
+                with self.assertRaises(ValueError):
+                    ReaderState(reader)
+
+    def test_rejects_inconsistent_types(self):
+        for text_fields, kind in (({"unknown"}, "REAL"), ("b", "REAL"),
+                                  (set(), "BLOB"), (set(), "TEXT"), ({"a"}, "REAL")):
+            with self.subTest(text_fields=text_fields, kind=kind):
+                reader = FakeReader([])
+                reader.text_fields = text_fields
+                reader.column_type = lambda field: kind
+                with self.assertRaises(ValueError):
+                    ReaderState(reader)
+
+    def test_contract_is_frozen_after_setup(self):
+        reader = FakeReader([{"a": 1.0, "b": "still text", "ts": 0}])
+        reader.text_fields = {"b"}
+        state = ReaderState(reader)
+        reader.fields = ["ts"]
+        reader.text_fields.clear()
+        self.assertEqual(state.fields, ("a", "b"))
+        self.assertEqual(state.column_types, {"a": "REAL", "b": "TEXT"})
+        self.assertEqual(state.read(), {"a": 1.0, "b": "still text"})
+
     def test_passes_values_through(self):
         state = ReaderState(FakeReader([{"a": 1.0}]))
         self.assertEqual(state.read(), {"a": 1.0})

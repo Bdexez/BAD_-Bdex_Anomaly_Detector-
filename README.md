@@ -82,6 +82,8 @@ The SQLite backup includes committed WAL transactions while collection continues
 
 Each reader owns one source, discovers it during setup and returns a dictionary of values on each tick. A missing source disables itself; read failures are tracked without bringing down the acquisition loop.
 
+Reader declarations are validated at startup. Invalid names, duplicate metric ownership and reserved sample metadata disable the offending reader with a log message. Accepted columns and their types remain fixed for the collection session.
+
 | Decision | Implementation |
 | :--- | :--- |
 | **Discover sensors by identity** | Resolve hwmon devices by their `name` rather than unstable numeric paths. |

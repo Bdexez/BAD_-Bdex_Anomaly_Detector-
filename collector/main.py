@@ -84,21 +84,34 @@ def build_readers(on_disable=None, emitter=None, boot: str = "") -> list[ReaderS
     base comme les autres.
     """
     active: list[ReaderState] = []
-    for reader in candidate_readers(boot):
-        reader.emitter = emitter
-        try:
-            ok = reader.setup()
-        except Exception as exc:
-            log.error("setup %s a échoué: %s", reader.name, exc)
-            close_reader(reader)
-            continue
-        if ok:
-            active.append(ReaderState(reader, on_disable=on_disable))
-            log.info("reader actif: %s -> %s", reader.name, ", ".join(reader.fields))
-        else:
-            log.info("reader indisponible: %s", reader.name)
-            close_reader(reader)
-    return active
+    owners: dict[str, str] = {}
+    try:
+        for reader in candidate_readers(boot):
+            state = None
+            try:
+                reader.emitter = emitter
+                if reader.setup():
+                    candidate = ReaderState(reader, on_disable=on_disable)
+                    for field in candidate.fields:
+                        if field in owners:
+                            raise ValueError(f"colonne {field} déjà produite par {owners[field]}")
+                    state = candidate
+                else:
+                    log.info("reader indisponible: %s", reader.name)
+            except Exception as exc:
+                log.error("setup %s a échoué: %s", reader.name, exc)
+            finally:
+                if state is None:
+                    close_reader(reader)
+            if state is not None:
+                active.append(state)
+                owners.update({field: reader.name for field in state.fields})
+                log.info("reader actif: %s -> %s", reader.name, ", ".join(state.fields))
+        return active
+    except BaseException:
+        for state in active:
+            close_reader(state.reader)
+        raise
 
 
 def now_ms() -> int:
@@ -129,10 +142,7 @@ class Collector:
             )
 
             for state in self.readers:
-                reader = state.reader
-                self.storage.ensure_columns(
-                    reader.fields, {f: reader.column_type(f) for f in reader.fields}
-                )
+                self.storage.ensure_columns(state.fields, state.column_types)
 
             log.info("hwmon détectés: %s", ", ".join(sorted(list_hwmon())) or "aucun")
             self._store_event("collector", "start", "info", f"period={period}s")

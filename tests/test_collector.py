@@ -319,14 +319,53 @@ class CollectorTest(unittest.TestCase):
 
     def test_failed_initialization_closes_active_readers_and_storage(self):
         reader = CountingReader()
-        reader.fields = ["invalid column"]
         storage = Storage(self.db, SCHEMA)
         self.addCleanup(storage.close)
         with mock.patch.object(main_module, "Storage", return_value=storage), \
+             mock.patch.object(storage, "ensure_columns", side_effect=sqlite3.OperationalError("plein")), \
              mock.patch.object(main_module, "candidate_readers", return_value=[reader]):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(sqlite3.OperationalError):
                 Collector(str(self.db), period=1.0)
         self.assertTrue(reader.closed)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            storage.conn.execute("SELECT 1")
+
+    def test_invalid_reader_schema_is_isolated_from_healthy_readers(self):
+        for fields in (["invalid column"], ["ts"], ["boot_id"], ["sample_id"],
+                       ["bad", "bad"], "bad"):
+            with self.subTest(fields=fields):
+                bad, good = CountingReader(), CountingReader()
+                bad.fields = fields
+                bad.text_fields = frozenset()
+                collector = self.collector([bad, good])
+                self.assertTrue(bad.closed)
+                self.assertEqual([s.reader for s in collector.readers], [good])
+                collector.flush([collector.tick()])
+                self.assertEqual(self.query("SELECT value, note FROM samples ORDER BY sample_id DESC LIMIT 1"),
+                                 [(1.0, "ok")])
+                collector.close()
+
+    def test_conflicting_reader_is_closed_without_overwriting_metrics(self):
+        first, conflict = CountingReader(), CountingReader()
+        conflict.name = "conflict"
+        conflict.read = lambda: {"value": 999.0, "note": "overwritten"}
+        collector = self.collector([first, conflict])
+        self.assertTrue(conflict.closed)
+        self.assertFalse(first.closed)
+        collector.flush([collector.tick()])
+        self.assertEqual(self.query("SELECT value, note FROM samples"), [(1.0, "ok")])
+
+    def test_interrupted_setup_closes_current_and_previously_active_readers(self):
+        first, interrupted = CountingReader(), CountingReader()
+        interrupted.setup = mock.Mock(side_effect=KeyboardInterrupt)
+        storage = Storage(self.db, SCHEMA)
+        self.addCleanup(storage.close)
+        with mock.patch.object(main_module, "Storage", return_value=storage), \
+             mock.patch.object(main_module, "candidate_readers", return_value=[first, interrupted]):
+            with self.assertRaises(KeyboardInterrupt):
+                Collector(str(self.db), period=1.0)
+        self.assertTrue(first.closed)
+        self.assertTrue(interrupted.closed)
         with self.assertRaises(sqlite3.ProgrammingError):
             storage.conn.execute("SELECT 1")
 
