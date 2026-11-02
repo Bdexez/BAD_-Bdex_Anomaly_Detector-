@@ -158,6 +158,11 @@ class ReaderState:
                 valid = True
             elif field in self._text_fields:
                 valid = isinstance(value, str)
+                if valid:
+                    try:
+                        value.encode("utf-8")
+                    except UnicodeError:
+                        valid = False
             elif isinstance(value, int):
                 valid = -(2**63) <= value < 2**63
             else:

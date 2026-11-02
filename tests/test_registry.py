@@ -70,3 +70,10 @@ class HwmonTest(unittest.TestCase):
         self.assertEqual(registry.read_int(good), 42)
         self.assertIsNone(registry.read_int(bad))
         self.assertIsNone(registry.read_int(self.root / "absent"))
+
+    def test_invalid_utf8_name_does_not_block_other_devices(self):
+        bad = make_hwmon(self.root, 0, "bad", {})
+        (bad / "name").write_bytes(b"invalid\xff\n")
+        make_hwmon(self.root, 1, "k10temp", {})
+        self.assertIsNone(registry.read_text(bad / "name"))
+        self.assertEqual(list(registry.list_hwmon()), ["k10temp"])

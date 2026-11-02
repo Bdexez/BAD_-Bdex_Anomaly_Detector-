@@ -112,7 +112,7 @@ def read_text(path: pathlib.Path) -> str | None:
     """Lecture tolérante d'un fichier sysfs texte. None si illisible."""
     try:
         return path.read_text().strip()
-    except OSError:
+    except (OSError, UnicodeError):
         return None
 
 

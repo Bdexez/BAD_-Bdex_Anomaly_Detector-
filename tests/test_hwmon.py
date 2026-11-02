@@ -55,6 +55,13 @@ class HwmonReaderTest(unittest.TestCase):
         self.assertTrue(reader.setup())
         self.assertEqual(reader.fields, ["k10temp_temp1"])
 
+    def test_invalid_utf8_label_falls_back_to_channel_name(self):
+        hwmon = make_hwmon(self.root, 0, "k10temp", {"temp1_input": "44000"})
+        (hwmon / "temp1_label").write_bytes(b"bad\xff")
+        reader = K10TempReader()
+        self.assertTrue(reader.setup())
+        self.assertEqual(reader.read(), {"k10temp_temp1": 44.0})
+
     def test_gigabyte_ignores_labels_and_numbers_columns(self):
         files = {f"temp{i}_input": f"{30000 + i}\n" for i in range(1, 7)}
         files["temp1_label"] = "generic\n"

@@ -446,3 +446,17 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(
             self.query("SELECT value, bad FROM samples ORDER BY ts"), [(1.0, None), (2.0, None)]
         )
+
+    def test_unencodable_text_does_not_poison_a_sqlite_batch(self):
+        class InvalidText(Reader):
+            name = "invalid_text"
+            fields = ["bad_text"]
+            text_fields = frozenset({"bad_text"})
+
+            def read(self):
+                return {"bad_text": "bad\udcff"}
+
+        collector = self.collector([CountingReader(), InvalidText()])
+        collector.flush([collector.tick(), collector.tick()])
+        self.assertEqual(self.query("SELECT value, note, bad_text FROM samples ORDER BY sample_id"),
+                         [(1.0, "ok", None), (2.0, "ok", None)])

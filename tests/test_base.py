@@ -95,6 +95,16 @@ class ReaderStateTest(unittest.TestCase):
                 state.read()
         warning.assert_called_once()
 
+    def test_text_must_be_encodable_for_sqlite(self):
+        reader = FakeReader([{"a": 42.0, "b": value}
+                             for value in ("activité 🐧", "bad\ud800", "bad\udcff")])
+        reader.text_fields = {"b"}
+        state = ReaderState(reader)
+        self.assertEqual(state.read(), {"a": 42.0, "b": "activité 🐧"})
+        self.assertEqual(state.read(), {"a": 42.0, "b": None})
+        self.assertEqual(state.read(), {"a": 42.0, "b": None})
+        self.assertTrue(state.enabled)
+
     def test_mixed_unknown_key_types_are_dropped_without_a_crash(self):
         state = ReaderState(FakeReader([{"a": 1.0, "surprise": 2.0, 123: 3.0}]))
         self.assertEqual(state.read(), {"a": 1.0})
