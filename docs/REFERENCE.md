@@ -88,6 +88,12 @@ python -m collector.main --db /tmp/trial.db --period 0.5 --duration 30 -v
 
 > 🛠️ **As a service**: see [`systemd/bad-collector.service`](../systemd/bad-collector.service).
 
+The unit expects the repository at `/opt/bad`. Install it there before copying
+and enabling the service. systemd creates `/var/lib/bad` at startup and preserves
+it when the service stops; collection writes to `/var/lib/bad/metrics.db`.
+Pass that same `--db` path to annotation, report, export and backup commands
+when working with the service's dataset.
+
 ### Annotating experiments
 
 This is the project's added value: the ground truth no sensor gives you.

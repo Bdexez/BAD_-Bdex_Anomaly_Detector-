@@ -1,4 +1,4 @@
-# Installation :
+# Installation (dépôt présent dans /opt/bad) :
 #   sudo cp systemd/bad-collector.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now bad-collector
 #
@@ -8,16 +8,16 @@
 
 [Unit]
 Description=BAD — collecte de télémétrie matérielle à 1 Hz
-After=multi-user.target
 
 [Service]
 Type=simple
+StateDirectory=bad
 WorkingDirectory=/opt/bad
 ExecStart=/usr/bin/python3 -m collector.main --db /var/lib/bad/metrics.db --period 1.0
 Restart=always
 RestartSec=5
 
-# Le daemon lit /proc, /sys et écrit un seul fichier. Rien d'autre.
+# Le daemon lit /proc, /sys et écrit dans son répertoire de données.
 ProtectHome=read-only
 ProtectSystem=strict
 ReadWritePaths=/var/lib/bad
