@@ -120,6 +120,8 @@ python -m unittest discover -s tests -t .
 
 The suite exercises fake `/proc` and `/sys` trees, sensor discovery, counter wraparound, kernel events, real SQLite lock contention, legacy migrations, write retries, buffer limits and collection deadlines without requiring the matching hardware.
 
+[GitHub Actions](.github/workflows/tests.yml) runs the suite on Linux with Python 3.10 through 3.15 for every push and pull request.
+
 ## Explore the implementation
 
 | Entry point | Responsibility |
