@@ -254,6 +254,33 @@ class StorageTest(unittest.TestCase):
             self.storage.insert_samples([{"ts": 1, "boot_id": "b"}])
         self.assertFalse(self.storage.conn.in_transaction)
 
+    def test_interrupted_batch_rolls_back_before_retrying(self):
+        for interruption in (KeyboardInterrupt, SystemExit):
+            with self.subTest(interruption=interruption.__name__):
+                class InterruptedConnection(sqlite3.Connection):
+                    interrupt = True
+
+                    def executemany(self, sql, parameters):
+                        if self.interrupt:
+                            self.interrupt = False
+                            super().execute(sql, parameters[0])
+                            raise interruption("batch interrupted")
+                        return super().executemany(sql, parameters)
+
+                path = self.db.with_name(interruption.__name__ + ".db")
+                connection = sqlite3.connect(path, isolation_level=None, factory=InterruptedConnection)
+                with mock.patch("collector.storage.sqlite3.connect", return_value=connection):
+                    storage = Storage(path, SCHEMA)
+                self.addCleanup(storage.close)
+                rows = [{"ts": 1, "boot_id": "b"}, {"ts": 2, "boot_id": "b"}]
+                with self.assertRaisesRegex(interruption, "batch interrupted"):
+                    storage.insert_samples(rows)
+                self.assertFalse(connection.in_transaction)
+                self.assertEqual(storage.count_samples(), 0)
+                storage.insert_samples(rows)
+                self.assertEqual(connection.execute("SELECT ts FROM samples ORDER BY sample_id").fetchall(),
+                                 [(1,), (2,)])
+
     def test_initialization_failure_closes_the_connection(self):
         connection = sqlite3.connect(":memory:")
         with mock.patch("collector.storage.sqlite3.connect", return_value=connection):

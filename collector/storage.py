@@ -172,7 +172,9 @@ class Storage:
         try:
             self.conn.executemany(sql, [[row.get(c) for c in cols] for row in rows])
             self.conn.execute("COMMIT")
-        except Exception:
+        except BaseException:
+            # Ctrl+C doit aussi libérer la transaction : l'arrêt du collector
+            # retente ensuite le batch resté en RAM, sans insertions partielles.
             # Certaines erreurs SQLite annulent déjà la transaction entière.
             # Un second ROLLBACK masquerait alors l'erreur d'origine.
             if self.conn.in_transaction:

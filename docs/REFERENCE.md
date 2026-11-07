@@ -191,6 +191,9 @@ The sample and event queues each hold at most 10,000 entries. Saturation drops
 the oldest entries and logs the loss. These queues are not persisted: an abrupt
 exit loses pending data. Shutdown makes a final write attempt, reports unwritten
 entries, and closes resources even when SQLite is still unavailable.
+An interrupted sample transaction is rolled back before shutdown retries the
+pending batch, so a partial insert does not block the final write or duplicate
+samples on retry.
 
 `--period` and `--duration` must be finite and strictly positive. Duration limits
 and stop signals wake the wait between samples; an in-progress reader or SQLite

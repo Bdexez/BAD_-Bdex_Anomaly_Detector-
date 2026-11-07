@@ -206,6 +206,27 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(buffer, [])
         self.assertEqual(self.query("SELECT ts FROM samples ORDER BY ts"), [(1,), (2,)])
 
+    def test_interrupted_flush_retries_pending_samples_during_shutdown(self):
+        class InterruptedConnection(sqlite3.Connection):
+            interrupt = True
+
+            def executemany(self, sql, parameters):
+                if self.interrupt:
+                    self.interrupt = False
+                    super().execute(sql, parameters[0])
+                    raise KeyboardInterrupt
+                return super().executemany(sql, parameters)
+
+        reader = CountingReader()
+        collector = self.collector([reader])
+        collector.storage.conn.close()
+        collector.storage.conn = sqlite3.connect(self.db, isolation_level=None, factory=InterruptedConnection)
+        with self.clock(collector), mock.patch.object(main_module, "FLUSH_EVERY", 1):
+            collector.run(duration=1.0)
+        self.assertEqual(self.query("SELECT value FROM samples"), [(1.0,)])
+        self.assertEqual(self.query("SELECT kind FROM events ORDER BY id"), [("start",), ("stop",)])
+        self.assertTrue(reader.closed)
+
     def test_persistent_failure_keeps_a_bounded_buffer_and_retries_in_batches(self):
         collector = self.collector([CountingReader()])
         collector.period = 1.0
