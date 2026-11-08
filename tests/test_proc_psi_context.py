@@ -107,12 +107,60 @@ class ProcTest(unittest.TestCase):
         self.assertAlmostEqual(second["cpu_util"], 0.25)
         self.assertAlmostEqual(second["cpu0_util"], 0.25)
 
-    def test_util_is_clamped(self):
+    def test_receding_counters_are_missing_and_rebase_only_the_affected_cpu(self):
+        before = [100, 0, 50, 1000, 10, 0, 0, 0]
+        for after in ([300, 0, 50, 900, 10, 0, 0, 0],
+                      [90, 0, 80, 1010, 10, 0, 0, 0],
+                      [120, 0, 50, 1020, 5, 0, 0, 0]):
+            with self.subTest(after=after):
+                def stat(counters, idle, busy):
+                    self.write_stat(idle=idle, busy=busy)
+                    with (self.root / "stat").open("a") as stream:
+                        stream.write("cpu2 " + " ".join(map(str, counters)) + "\n")
+
+                stat(before, 1000, 0)
+                reader = ProcReader(root=self.root)
+                reader.setup()
+                reader.read()
+                stat(after, 1075, 25)
+                out = reader.read()
+                self.assertIsNone(out["cpu2_util"])
+                self.assertAlmostEqual(out["cpu_util"], 0.25)
+                self.assertAlmostEqual(out["cpu0_util"], 0.25)
+                recovered = after.copy()
+                recovered[0] += 25
+                recovered[3] += 75
+                stat(recovered, 1150, 50)
+                self.assertAlmostEqual(reader.read()["cpu2_util"], 0.25)
+
+    def test_missing_cpu_requires_a_fresh_baseline_when_it_reappears(self):
         reader = ProcReader(root=self.root)
         reader.setup()
         reader.read()
-        self.write_stat(idle=900, busy=200)  # compteur qui recule (hotplug CPU)
-        self.assertLessEqual(reader.read()["cpu_util"], 1.0)
+        write(self.root / "stat", "cpu 25 0 0 1075 0\ncpu1 25 0 0 1075 0\n")
+        self.assertIsNone(reader.read()["cpu0_util"])
+        self.write_stat(idle=1150, busy=50)
+        self.assertIsNone(reader.read()["cpu0_util"])
+        self.write_stat(idle=1225, busy=75)
+        self.assertAlmostEqual(reader.read()["cpu0_util"], 0.25)
+
+    def test_invalid_and_unchanged_counters_do_not_produce_utilisation(self):
+        for invalid in ("cpu 0 0 0 1000 0", "cpu -1 0 0 1100 0", "cpu invalid"):
+            with self.subTest(invalid=invalid):
+                self.write_stat(idle=1000, busy=0)
+                reader = ProcReader(root=self.root)
+                reader.setup()
+                reader.read()
+                write(self.root / "stat", invalid + "\n")
+                self.assertIsNone(reader.read()["cpu_util"])
+
+    def test_guest_time_is_not_counted_twice(self):
+        write(self.root / "stat", "cpu 100 50 0 1000 0 0 0 0 30 10\n")
+        reader = ProcReader(root=self.root)
+        reader.setup()
+        reader.read()
+        write(self.root / "stat", "cpu 140 60 0 1050 0 0 0 0 60 15\n")
+        self.assertAlmostEqual(reader.read()["cpu_util"], 0.5)
 
     def test_missing_proc_disables_reader(self):
         self.assertFalse(ProcReader(root=self.root / "absent").setup())

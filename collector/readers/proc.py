@@ -43,7 +43,7 @@ class ProcReader(Reader):
         self.root = root
         self.fields = []
         self._cpus: list[str] = []
-        self._prev: dict[str, tuple[int, int]] = {}
+        self._prev: dict[str, tuple[int, ...]] = {}
         self._freq_paths: list[pathlib.Path] = []
 
     def setup(self) -> bool:
@@ -70,29 +70,27 @@ class ProcReader(Reader):
                 return paths
         return []
 
-    def _read_stat(self) -> dict[str, tuple[int, int]]:
-        """{"cpu": (idle, total), "cpu0": ..., ...} en jiffies cumulés."""
+    def _read_stat(self) -> dict[str, tuple[int, ...]]:
+        """Compteurs individuels en jiffies, sans doubler guest/guest_nice."""
         try:
             content = (self.root / "stat").read_text()
         except OSError:
             return {}
-        out: dict[str, tuple[int, int]] = {}
+        out: dict[str, tuple[int, ...]] = {}
         for line in content.splitlines():
             parts = line.split()
             if not parts or not _CPU_LINE_RE.fullmatch(parts[0]):
                 continue
             try:
-                values = [int(v) for v in parts[1:]]
+                values = tuple(int(v) for v in parts[1:9])
             except ValueError:
                 continue
-            if len(values) < 5:
+            if len(values) < 5 or any(value < 0 for value in values):
                 continue
             # user nice system idle iowait irq softirq steal guest guest_nice
-            idle = values[3] + values[4]
             # guest et guest_nice sont déjà comptés dans user/nice : les
             # additionner compterait le temps invité deux fois.
-            total = sum(values[:8])
-            out[parts[0]] = (idle, total)
+            out[parts[0]] = values
         return out
 
     def _meminfo(self) -> dict[str, int]:
@@ -141,16 +139,21 @@ class ProcReader(Reader):
             out["cpu_freq_avg"] = sum(freqs) / len(freqs) / 1000 if freqs else None  # kHz -> MHz
         return out
 
-    def _util(self, key: str, current: tuple[int, int] | None) -> float | None:
+    def _util(self, key: str, current: tuple[int, ...] | None) -> float | None:
         previous = self._prev.get(key)
         if current is None:
             self._prev.pop(key, None)
             return None
         self._prev[key] = current
-        if previous is None:
+        if previous is None or len(previous) != len(current):
             return None
-        idle_delta = current[0] - previous[0]
-        total_delta = current[1] - previous[1]
+        deltas = [value - before for value, before in zip(current, previous)]
+        # Un total croissant peut masquer le recul d'un seul compteur. Ce
+        # tick est inexploitable ; current devient la nouvelle référence.
+        if any(delta < 0 for delta in deltas):
+            return None
+        idle_delta = deltas[3] + deltas[4]
+        total_delta = sum(deltas)
         if total_delta <= 0:
             return None
-        return max(0.0, min(1.0, 1.0 - idle_delta / total_delta))
+        return 1.0 - idle_delta / total_delta

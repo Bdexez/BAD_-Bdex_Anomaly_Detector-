@@ -98,6 +98,8 @@ Samples are flushed after 30 new readings or 30 seconds, including when sampling
 
 Sensor names remain distinct when hardware labels repeat. Long labels receive a stable hash suffix to fit the 63-character column limit. For hwmon power, discovery prefers a readable average and falls back to an instantaneous input; the selected source stays fixed during collection.
 
+CPU utilization is missing for an interval when a contributing counter moves backwards, rather than recording a false spike. The next interval uses the new baseline; other CPUs and metrics continue to be collected.
+
 ## Data sources
 
 | Source group | Readers |

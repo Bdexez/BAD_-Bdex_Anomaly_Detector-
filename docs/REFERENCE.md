@@ -207,6 +207,12 @@ fields accept numbers or `NULL`. Per-core columns retain the kernel CPU IDs even
 when the online CPUs are not numbered consecutively. The discovered schema stays
 fixed for the lifetime of the collector.
 
+CPU utilization checks each contributing `/proc/stat` counter before deriving a
+delta. A counter that moves backwards makes that CPU's interval `NULL` and
+establishes a fresh baseline, even if its total increased. Missing CPUs also
+need a fresh baseline when they return. Other CPUs and metrics remain available;
+guest time is already included in user/nice time and is not counted twice.
+
 ### Exporting data
 
 ```bash
