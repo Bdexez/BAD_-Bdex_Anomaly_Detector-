@@ -16,13 +16,37 @@ def _percentage(part: int, total: int) -> float | None:
     return part / total * 100 if total else None
 
 
-def dataset_report(db: str | pathlib.Path) -> dict:
+def dataset_report(
+    db: str | pathlib.Path,
+    *,
+    since: int | None = None,
+    until: int | None = None,
+) -> dict:
     """Compte les valeurs présentes, les annotations et les événements.
 
     Les agrégations restent dans SQLite : aucune série de mesures n'est
     chargée en mémoire Python. La complétude ne préjuge pas de la validité
     physique d'une mesure, et aucune vérité terrain n'est inférée.
+    Les bornes temporelles sont inclusives/exclusives, comme pour l'export.
     """
+    if since is not None and until is not None and until <= since:
+        raise ValueError("--until doit être supérieur à --since")
+    filters = []
+    label_filters = []
+    params: list[int] = []
+    for value, condition, label_condition in (
+        (since, "ts >= ?", "(ts_end IS NULL OR ts_end > ?)"),
+        (until, "ts < ?", "ts_start < ?"),
+    ):
+        if value is not None:
+            filters.append(condition)
+            label_filters.append(label_condition)
+            params.append(value)
+    where = " WHERE " + " AND ".join(filters) if filters else ""
+    # Une fenêtre vide ne peut pas intersecter la période demandée. Sans
+    # filtre, le rapport conserve le décompte de tous les labels enregistrés.
+    label_where = (" WHERE (ts_end IS NULL OR ts_start < ts_end) AND "
+                   + " AND ".join(label_filters)) if label_filters else ""
     with read_snapshot(db) as conn:
         fields = conn.execute("PRAGMA table_info(samples)").fetchall()
         if not {"ts", "boot_id"} <= {field[1] for field in fields}:
@@ -31,26 +55,32 @@ def dataset_report(db: str | pathlib.Path) -> dict:
         count, first, last, labelled = conn.execute(
             "SELECT COUNT(*), MIN(s.ts), MAX(s.ts), COALESCE(SUM(EXISTS("
             " SELECT 1 FROM labels AS l WHERE l.ts_start <= s.ts"
-            " AND (l.ts_end IS NULL OR s.ts < l.ts_end))), 0) FROM samples AS s"
+            " AND (l.ts_end IS NULL OR s.ts < l.ts_end))), 0) FROM samples AS s" + where,
+            params,
         ).fetchone()
         counts = ()
         if metrics:
             counts = conn.execute(
                 "SELECT " + ", ".join(f"COUNT({quote_identifier(field[1])})" for field in metrics)
-                + " FROM samples"
+                + " FROM samples" + where,
+                params,
             ).fetchone()
         boots = conn.execute(
             "SELECT boot_id, COUNT(*), MIN(ts), MAX(ts), COUNT(*) - COUNT(DISTINCT ts)"
-            " FROM samples GROUP BY boot_id ORDER BY boot_id"
+            " FROM samples" + where + " GROUP BY boot_id ORDER BY boot_id",
+            params,
         ).fetchall()
         total_labels, open_labels = conn.execute(
-            "SELECT COUNT(*), COALESCE(SUM(ts_end IS NULL), 0) FROM labels"
+            "SELECT COUNT(*), COALESCE(SUM(ts_end IS NULL), 0) FROM labels" + label_where,
+            params,
         ).fetchone()
         events = conn.execute(
-            "SELECT source, kind, severity, COUNT(*) FROM events"
-            " GROUP BY source, kind, severity ORDER BY source, kind, severity"
+            "SELECT source, kind, severity, COUNT(*) FROM events" + where
+            + " GROUP BY source, kind, severity ORDER BY source, kind, severity",
+            params,
         ).fetchall()
         return {
+            "window": {"since": since, "until": until},
             "samples": {"count": count, "first_ts": first, "last_ts": last,
                         "labelled": labelled, "labelled_pct": _percentage(labelled, count)},
             "boots": [{"boot_id": boot, "samples": n, "first_ts": start,
