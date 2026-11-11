@@ -226,4 +226,22 @@ class DatasetReportTest(unittest.TestCase):
         self.assertEqual(error.exception.code, 2)
         self.assertFalse(missing.exists())
 
+    def test_cli_accepts_time_windows_in_json_and_text_modes(self):
+        self.seed()
+        args = ["--db", str(self.db), "--since", "150", "--until", "300"]
+        with redirect_stdout(io.StringIO()) as output:
+            report_module.main([*args, "--json"])
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["window"], {"since": 150, "until": 300})
+        self.assertEqual(report["samples"]["count"], 1)
+        with redirect_stdout(io.StringIO()) as output:
+            report_module.main(args)
+        self.assertIn("Mesures : 1", output.getvalue())
+        self.assertIn("150 → 300", output.getvalue())
 
+    def test_cli_reports_invalid_windows_without_a_traceback(self):
+        with redirect_stderr(io.StringIO()) as error, self.assertRaises(SystemExit) as result:
+            report_module.main(["--db", str(self.db), "--since", "200", "--until", "100"])
+        self.assertEqual(result.exception.code, 2)
+        self.assertIn("--until doit être supérieur à --since", error.getvalue())
+        self.assertNotIn("Traceback", error.getvalue())

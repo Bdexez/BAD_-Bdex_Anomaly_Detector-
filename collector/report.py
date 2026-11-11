@@ -99,15 +99,21 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="État et complétude du dataset BAD")
     parser.add_argument("--db", default="data/metrics.db", help="base SQLite existante")
     parser.add_argument("--json", action="store_true", help="rapport JSON pour les scripts")
+    parser.add_argument("--since", type=int, help="epoch ms inclusif")
+    parser.add_argument("--until", type=int, help="epoch ms exclusif")
     args = parser.parse_args(argv)
     try:
-        report = dataset_report(args.db)
+        report = dataset_report(args.db, since=args.since, until=args.until)
     except (ValueError, OSError, sqlite3.Error) as exc:
         parser.error(str(exc))
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return
     samples = report["samples"]
+    if args.since is not None or args.until is not None:
+        start = "sans borne" if args.since is None else str(args.since)
+        end = "sans borne" if args.until is None else str(args.until)
+        print(f"Fenêtre (epoch ms, fin exclue) : {start} → {end}")
     print(f"Mesures : {samples['count']} · boots : {len(report['boots'])}")
     print(f"Période (epoch ms) : {samples['first_ts']} → {samples['last_ts']}")
     coverage = samples["labelled_pct"]

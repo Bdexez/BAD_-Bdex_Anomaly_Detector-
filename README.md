@@ -66,9 +66,12 @@ Check the dataset before exporting or training:
 ```bash
 python -m collector.report --db data/metrics.db
 python -m collector.report --db data/metrics.db --json
+python -m collector.report --db data/metrics.db --since 1794300000000 --until 1794386400000
 ```
 
 The report shows metric completeness, annotation coverage, sample windows per boot, repeated timestamps and grouped fault events. It reads a consistent snapshot without modifying the database; overlapping experiment labels count each sample once. These are data quality facts, not inferred anomaly scores.
+
+Use `--since` and `--until` to check the same inclusive/exclusive time window as an export. Metric coverage and events are limited to that window; annotation counts include non-empty experiment windows that intersect it. JSON output records the requested bounds in `window`.
 
 ## Back up an active collection
 

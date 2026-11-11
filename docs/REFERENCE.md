@@ -249,6 +249,8 @@ from shrinking until the export finishes.
 ```bash
 python -m collector.report --db data/metrics.db
 python -m collector.report --db data/metrics.db --json
+python -m collector.report --db data/metrics.db \
+  --since 1794300000000 --until 1794386400000 --json
 ```
 
 The report counts non-NULL values for each metric, including legitimate zeroes
@@ -256,6 +258,15 @@ and empty strings. Coverage on an empty dataset is undefined (`null` in JSON).
 Annotation coverage uses the same `[start, end)` windows as export and counts
 overlapping labels once per sample. Boot summaries include sample windows and
 repeated timestamps; events are grouped by source, kind and severity.
+
+Optional `--since` and `--until` use epoch milliseconds and select `[since, until)`;
+either bound can be omitted. They filter samples, metric coverage, boot summaries
+and event timestamps. With a time filter, label counts include non-empty windows
+that intersect the requested interval, including windows that began earlier or
+have no samples. The open count describes windows still open in the stored
+snapshot. Without a time filter, all stored labels are counted. The JSON `window`
+object records both requested bounds (`null` for an omitted bound); a text report
+prints them when a filter is active. Reversed or empty ranges are rejected.
 
 All sections use one read-only snapshot and SQL aggregations. Samples are not
 loaded into Python memory, legacy schemas are not migrated, and no `normal`
